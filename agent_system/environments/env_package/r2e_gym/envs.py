@@ -19,6 +19,10 @@ DEFAULT_R2E_COMMAND_FILES = [
     "/home/caiting/R2E-Gym/src/r2egym/agenthub/tools/finish.py",
 ]
 
+STR_REPLACE_AFTER_EXPLORE_REWARD = 0.05
+REPEATED_FAILED_ACTION_PENALTY = 0.02
+REPEATED_FAILED_ACTION_MAX_PENALTY = 0.10
+
 
 class R2EGymVectorEnv(gym.Env):
     def __init__(
@@ -59,6 +63,8 @@ class R2EGymVectorEnv(gym.Env):
         self.runtimes: List[Any] = []
         self.dones: List[bool] = []
         self.steps: List[int] = []
+        self.last_successful_explore: List[bool] = []
+        self.failed_action_counts: List[Dict[Any, int]] = []
 
     def _repo_env_cls(self):
         if self.repo_env_cls is not None:
@@ -122,6 +128,8 @@ class R2EGymVectorEnv(gym.Env):
         self.runtimes = []
         self.dones = [False] * len(self.current_tasks)
         self.steps = [0] * len(self.current_tasks)
+        self.last_successful_explore = [False] * len(self.current_tasks)
+        self.failed_action_counts = [{} for _ in self.current_tasks]
         observations: List[str] = []
         infos: List[Dict[str, Any]] = []
         repo_env_cls = self._repo_env_cls()
@@ -152,7 +160,105 @@ class R2EGymVectorEnv(gym.Env):
         error = action.get("error", "Invalid action format.") if isinstance(action, dict) else "Invalid action format."
         info = self._base_info(task, is_action_valid=False)
         info.update({"error": error, "won": False})
-        return f"Invalid action: {error}", 0.0, False, info
+        shaping_reward, shaping_events, repeat_count = self._record_failed_action(idx, action)
+        self.last_successful_explore[idx] = False
+        self._add_shaping_info(info, shaping_reward, shaping_events, repeat_count)
+        return f"Invalid action: {error}", shaping_reward, False, info
+
+    @staticmethod
+    def _action_signature(action: Any):
+        if hasattr(action, "function_name"):
+            params = tuple(
+                sorted((str(key), str(value)) for key, value in (getattr(action, "parameters", {}) or {}).items())
+            )
+            return ("action", str(getattr(action, "function_name", "")), params)
+        if isinstance(action, dict):
+            params = tuple(sorted((str(key), str(value)) for key, value in (action.get("parameters", {}) or {}).items()))
+            return (
+                "invalid",
+                str(action.get("raw_action") or ""),
+                str(action.get("function_name") or ""),
+                params,
+                str(action.get("error") or ""),
+            )
+        return ("raw", str(action))
+
+    @staticmethod
+    def _is_file_editor_command(action: Any, command: str) -> bool:
+        return (
+            hasattr(action, "function_name")
+            and getattr(action, "function_name", "") == "file_editor"
+            and (getattr(action, "parameters", {}) or {}).get("command") == command
+        )
+
+    @classmethod
+    def _is_explore_action(cls, action: Any) -> bool:
+        return hasattr(action, "function_name") and (
+            getattr(action, "function_name", "") == "search" or cls._is_file_editor_command(action, "view")
+        )
+
+    @classmethod
+    def _is_str_replace_action(cls, action: Any) -> bool:
+        return cls._is_file_editor_command(action, "str_replace")
+
+    @staticmethod
+    def _looks_like_failed_observation(observation: str, info: Dict[str, Any]) -> bool:
+        if info.get("is_action_valid") is False:
+            return True
+        if info.get("error"):
+            return True
+        text = str(observation or "").lower()
+        failure_markers = (
+            "usage:",
+            "error:",
+            "traceback (most recent call last)",
+            "unrecognized arguments",
+            "missing required",
+            "invalid action",
+            "command not found",
+        )
+        return any(marker in text for marker in failure_markers)
+
+    def _record_failed_action(self, idx: int, action: Any) -> Tuple[float, List[str], int]:
+        signature = self._action_signature(action)
+        counts = self.failed_action_counts[idx]
+        repeat_count = counts.get(signature, 0) + 1
+        counts[signature] = repeat_count
+        repeated_times = max(0, repeat_count - 1)
+        penalty = min(REPEATED_FAILED_ACTION_PENALTY * repeated_times, REPEATED_FAILED_ACTION_MAX_PENALTY)
+        shaping_reward = -penalty
+        events = ["repeated_failed_action"] if repeated_times else []
+        return shaping_reward, events, repeat_count
+
+    @staticmethod
+    def _add_shaping_info(
+        info: Dict[str, Any],
+        shaping_reward: float,
+        shaping_events: List[str],
+        repeat_count: int = 0,
+    ) -> None:
+        info["r2e_shaping_reward"] = float(shaping_reward)
+        info["r2e_shaping_events"] = list(shaping_events)
+        if repeat_count:
+            info["r2e_failure_repeat_count"] = int(repeat_count)
+
+    def _step_shaping_reward(self, idx: int, action: Any, observation: str, info: Dict[str, Any]) -> float:
+        shaping_reward = 0.0
+        shaping_events: List[str] = []
+        repeat_count = 0
+
+        failed = self._looks_like_failed_observation(observation, info)
+        if failed:
+            shaping_reward, shaping_events, repeat_count = self._record_failed_action(idx, action)
+            self.last_successful_explore[idx] = False
+        else:
+            if self.last_successful_explore[idx] and self._is_str_replace_action(action):
+                shaping_reward += STR_REPLACE_AFTER_EXPLORE_REWARD
+                shaping_events.append("str_replace_after_successful_explore")
+            self.last_successful_explore[idx] = self._is_explore_action(action)
+
+        self._add_shaping_info(info, shaping_reward, shaping_events, repeat_count)
+        return shaping_reward
 
     def _terminal_reward(self, idx: int, runtime) -> float:
         if runtime is None:
@@ -200,7 +306,11 @@ class R2EGymVectorEnv(gym.Env):
                 observation = str(observation_obj)
                 info = self._base_info(task, is_action_valid=True)
                 info.update(step_info or {})
-                reward = 0.0
+                try:
+                    reward = float(_step_reward)
+                except (TypeError, ValueError):
+                    reward = 0.0
+                reward += self._step_shaping_reward(idx, action, observation, info)
                 self.steps[idx] += 1
                 forced_submit = (
                     self.max_steps is not None
@@ -209,10 +319,11 @@ class R2EGymVectorEnv(gym.Env):
                     and not done
                 )
                 if done or forced_submit:
-                    reward = self._terminal_reward(idx, runtime)
+                    terminal_reward = self._terminal_reward(idx, runtime)
+                    reward += terminal_reward
                     done = True
-                    info["won"] = reward >= 1.0
-                    info["terminal_r2e_reward"] = reward
+                    info["won"] = terminal_reward >= 1.0
+                    info["terminal_r2e_reward"] = terminal_reward
             self.dones[idx] = bool(done)
             observations.append(observation)
             rewards.append(float(reward))

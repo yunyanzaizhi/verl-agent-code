@@ -288,6 +288,74 @@ def test_r2e_vector_env_invalid_action_returns_observation_without_runtime_step(
     env.close()
 
 
+def test_r2e_vector_env_rewards_str_replace_after_successful_explore():
+    from agent_system.environments.env_package.r2e_gym.envs import R2EGymVectorEnv
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+    from agent_system.environments.env_package.r2e_gym.tasks import normalize_r2e_task_record
+
+    FakeRepoEnv.created = []
+    task = normalize_r2e_task_record(sample_r2e_record(), "dataset", "train", 0)
+    env = R2EGymVectorEnv(tasks=[task], env_num=1, group_n=1, repo_env_cls=FakeRepoEnv)
+    env.reset()
+
+    parsed, _ = r2e_gym_projection(
+        ["<function=file_editor><parameter=command>view</parameter><parameter=path>/testbed/demo/parser.py</parameter></function>"]
+    )
+    _obs, rewards, dones, infos = env.step(parsed)
+    assert rewards == [0.0]
+    assert dones == [False]
+    assert infos[0]["r2e_shaping_reward"] == 0.0
+
+    parsed, _ = r2e_gym_projection(
+        [
+            """
+            <function=file_editor>
+              <parameter=command>str_replace</parameter>
+              <parameter=path>/testbed/demo/parser.py</parameter>
+              <parameter=old_str>old parser code</parameter>
+              <parameter=new_str>new parser code</parameter>
+            </function>
+            """
+        ]
+    )
+    _obs, rewards, dones, infos = env.step(parsed)
+
+    assert rewards == [0.05]
+    assert dones == [False]
+    assert infos[0]["r2e_shaping_reward"] == 0.05
+    assert infos[0]["r2e_shaping_events"] == ["str_replace_after_successful_explore"]
+    env.close()
+
+
+def test_r2e_vector_env_escalates_repeated_failed_action_penalty():
+    from agent_system.environments.env_package.r2e_gym.envs import R2EGymVectorEnv
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+    from agent_system.environments.env_package.r2e_gym.tasks import normalize_r2e_task_record
+
+    FakeRepoEnv.created = []
+    task = normalize_r2e_task_record(sample_r2e_record(), "dataset", "train", 0)
+    env = R2EGymVectorEnv(tasks=[task], env_num=1, group_n=1, repo_env_cls=FakeRepoEnv)
+    env.reset()
+
+    parsed, _ = r2e_gym_projection(["not xml"])
+    _obs, rewards, dones, infos = env.step(parsed)
+    assert rewards == [0.0]
+    assert dones == [False]
+    assert infos[0]["is_action_valid"] is False
+    assert infos[0]["r2e_failure_repeat_count"] == 1
+    assert infos[0]["r2e_shaping_reward"] == 0.0
+
+    parsed, _ = r2e_gym_projection(["not xml"])
+    _obs, rewards, dones, infos = env.step(parsed)
+    assert rewards == [-0.02]
+    assert dones == [False]
+    assert infos[0]["is_action_valid"] is False
+    assert infos[0]["r2e_failure_repeat_count"] == 2
+    assert infos[0]["r2e_shaping_events"] == ["repeated_failed_action"]
+    assert FakeRepoEnv.created[0].actions == []
+    env.close()
+
+
 def test_r2e_environment_manager_formats_history_and_success():
     from omegaconf import OmegaConf
 

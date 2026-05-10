@@ -53,12 +53,15 @@ _TOOL_SCHEMAS = {
 }
 
 
-def _invalid_action(error: str) -> Dict[str, Any]:
-    return {
+def _invalid_action(error: str, raw_action: str = "") -> Dict[str, Any]:
+    action = {
         "function_name": "",
         "parameters": {},
         "error": error,
     }
+    if raw_action:
+        action["raw_action"] = raw_action
+    return action
 
 
 def _schema_error(action: Action) -> str:
@@ -107,12 +110,12 @@ def _schema_error(action: Action) -> str:
 def parse_r2e_gym_action(text: str) -> ParsedR2EAction:
     if text is None or not str(text).strip():
         error = "Action format error: empty model output. Use one <function=...>...</function> XML tool call."
-        return ParsedR2EAction(_invalid_action(error), False, error)
+        return ParsedR2EAction(_invalid_action(error, str(text or "")), False, error)
 
     blocks = _FUNCTION_BLOCK_RE.findall(str(text))
     if not blocks:
         error = "Action format error: output must contain exactly one <function=...>...</function> XML tool call."
-        return ParsedR2EAction(_invalid_action(error), False, error)
+        return ParsedR2EAction(_invalid_action(error, str(text)), False, error)
 
     warning = MULTIPLE_TOOL_CALLS_WARNING if len(blocks) > 1 else ""
     block = blocks[0].strip()
@@ -120,14 +123,14 @@ def parse_r2e_gym_action(text: str) -> ParsedR2EAction:
         action = Action.from_string(block)
     except Exception as exc:
         error = f"Action format error: failed to parse XML tool call: {exc}"
-        return ParsedR2EAction(_invalid_action(error), False, error)
+        return ParsedR2EAction(_invalid_action(error, str(text)), False, error)
 
     if not action.function_name:
         error = "Action format error: missing function name."
-        return ParsedR2EAction(_invalid_action(error), False, error)
+        return ParsedR2EAction(_invalid_action(error, str(text)), False, error)
     schema_error = _schema_error(action)
     if schema_error:
-        return ParsedR2EAction(_invalid_action(schema_error), False, schema_error)
+        return ParsedR2EAction(_invalid_action(schema_error, str(text)), False, schema_error)
     if warning:
         action.parse_warning = warning
     return ParsedR2EAction(action, True, "")
