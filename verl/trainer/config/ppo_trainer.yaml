@@ -314,3 +314,20 @@ env:
   webshop:
     use_small: True
     human_goals: False
+  r2e_gym:
+    train_dataset: R2E-Gym/R2E-Gym-Subset
+    train_split: train
+    val_dataset: R2E-Gym/R2E-Gym-Lite
+    val_split: dev_10pr_v1
+    max_train_tasks: null
+    max_val_tasks: null
+    backend: docker
+    step_timeout: 90
+    reward_timeout: 300
+    auto_submit_on_max_steps: True
+    verbose: False
+    command_files:
+      - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/r2egym/file_editor.py
+      - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/search.py
+      - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/r2egym/execute_bash.py
+      - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/finish.py

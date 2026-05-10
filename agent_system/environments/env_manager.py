@@ -599,6 +599,76 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
                 postprocess_text_obs.append(obs)
         return postprocess_text_obs
 
+
+class R2EGymEnvironmentManager(EnvironmentManagerBase):
+    def __init__(self, envs, projection_f, config):
+        self.memory = SimpleMemory()
+        self.tasks = []
+        self.task_ids = []
+        super().__init__(envs, projection_f, config)
+
+    def reset(self, kwargs):
+        text_obs, infos = self.envs.reset(kwargs=kwargs)
+        self.memory.reset(batch_size=len(text_obs))
+        self.tasks = list(getattr(self.envs, "current_tasks", [None] * len(text_obs)))
+        if len(self.tasks) != len(text_obs):
+            self.tasks = [None] * len(text_obs)
+        self.task_ids = [str(info.get("task_id", idx)) for idx, info in enumerate(infos)]
+        observations = {
+            "text": self.build_text_obs(text_obs, init=True),
+            "image": None,
+            "anchor": np.array(self.task_ids, dtype=object),
+        }
+        return observations, infos
+
+    def step(self, text_actions: List[str]):
+        actions, projection_valids = self.projection_f(text_actions)
+        next_obs, rewards, dones, infos = self.envs.step(actions)
+        from agent_system.environments.env_package.r2e_gym.prompts import format_r2e_action_for_history
+
+        action_history = [format_r2e_action_for_history(action) for action in actions]
+        self.memory.store({"text_obs": next_obs, "action": action_history})
+        for idx, info in enumerate(infos):
+            env_valid = bool(info.get("is_action_valid", True))
+            info["is_action_valid"] = bool(projection_valids[idx] and env_valid)
+        next_observations = {
+            "text": self.build_text_obs(next_obs),
+            "image": None,
+            "anchor": np.array(self.task_ids, dtype=object),
+        }
+        return next_observations, to_numpy(rewards), to_numpy(dones), infos
+
+    def build_text_obs(self, text_obs: List[str], init: bool = False) -> List[str]:
+        from agent_system.environments.env_package.r2e_gym.prompts import (
+            build_r2e_followup_prompt,
+            build_r2e_initial_prompt,
+            format_r2e_history_turn,
+        )
+
+        postprocess_text_obs = []
+        history_length = int(getattr(self.config.env, "history_length", 0))
+        for idx, observation in enumerate(text_obs):
+            task = self.tasks[idx] if idx < len(self.tasks) else None
+            if init or history_length <= 0:
+                postprocess_text_obs.append(build_r2e_initial_prompt(task, observation))
+                continue
+            records = self.memory[idx][-history_length:]
+            start_step = len(self.memory[idx]) - len(records) + 1
+            history = [
+                format_r2e_history_turn(start_step + offset, record["action"], record["text_obs"])
+                for offset, record in enumerate(records)
+            ]
+            postprocess_text_obs.append(
+                build_r2e_followup_prompt(
+                    task=task,
+                    current_observation=observation,
+                    history=history,
+                    step_count=len(self.memory[idx]),
+                )
+            )
+        return postprocess_text_obs
+
+
 def make_envs(config):
     """
     Create enviroments 
@@ -609,7 +679,15 @@ def make_envs(config):
     group_n = config.env.rollout.n if config.env.rollout.n > 0 else 1
     resources_per_worker = OmegaConf.to_container(config.env.resources_per_worker, resolve=True)
 
-    if "search" in config.env.env_name.lower():
+    if "r2e_gym" in config.env.env_name.lower() or config.env.env_name.lower() in ["r2e", "r2egym"]:
+        from agent_system.environments.env_package.r2e_gym import build_r2e_gym_envs, r2e_gym_projection
+        _envs = build_r2e_gym_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
+        _val_envs = build_r2e_gym_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)
+
+        envs = R2EGymEnvironmentManager(_envs, r2e_gym_projection, config)
+        val_envs = R2EGymEnvironmentManager(_val_envs, r2e_gym_projection, config)
+        return envs, val_envs
+    elif "search" in config.env.env_name.lower():
         from agent_system.environments.env_package.search import build_search_envs, search_projection
         _envs = build_search_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
         _val_envs = build_search_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)
