@@ -117,6 +117,34 @@ def test_r2e_initial_prompt_uses_r2e_code_repair_workflow():
     assert "DO NOT MODIFY any of the existing unit tests" in prompt
 
 
+def test_r2e_followup_prompt_keeps_original_issue_context_with_truncation():
+    from agent_system.environments.env_package.r2e_gym.prompts import build_r2e_followup_prompt
+    from agent_system.environments.env_package.r2e_gym.tasks import normalize_r2e_task_record
+
+    long_issue = "Fix the parser sentinel-start " + ("x" * 2100) + " sentinel-tail"
+    task = normalize_r2e_task_record(
+        sample_r2e_record(problem_statement=f"[ISSUE]\n{long_issue}\n[/ISSUE]"),
+        "dataset",
+        "train",
+        0,
+    )
+
+    prompt = build_r2e_followup_prompt(
+        task=task,
+        current_observation="Tool output after inspecting files",
+        history=["Step 1 action:\nexecute_bash(cmd=grep parser)\n\nStep 1 observation:\nmatched parser.py"],
+        step_count=1,
+    )
+
+    assert "Original Github issue:" in prompt
+    assert "<github_issue>" in prompt
+    assert "Fix the parser sentinel-start" in prompt
+    assert "sentinel-tail" not in prompt
+    assert "[truncated]" in prompt
+    assert "Tool output after inspecting files" in prompt
+    assert "Step 1 action:" in prompt
+
+
 def test_r2e_projection_accepts_reasoning_before_xml_tool_call():
     from r2egym.agenthub.action import Action
 

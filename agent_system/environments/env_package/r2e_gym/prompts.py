@@ -3,6 +3,8 @@ from typing import Iterable, List, Optional
 from .tasks import R2EGymTask
 
 
+R2E_FOLLOWUP_ISSUE_MAX_CHARS = 2000
+
 R2E_TOOL_SPEC = """We have access to the following functions:
 
 -- BEGIN FUNCTION #1: file_editor --
@@ -214,6 +216,17 @@ def format_r2e_history_turn(step: int, action_text: str, observation: str, max_o
     return f"Step {step} action:\n{action_text}\n\nStep {step} observation:\n{obs}"
 
 
+def format_r2e_issue_for_followup(task: Optional[R2EGymTask], max_chars: int = R2E_FOLLOWUP_ISSUE_MAX_CHARS) -> str:
+    if task is None:
+        return "No original Github issue was provided."
+    issue = (task.problem_statement or "").strip()
+    if not issue:
+        return "No original Github issue was provided."
+    if len(issue) <= max_chars:
+        return issue
+    return f"{issue[:max_chars].rstrip()}\n[truncated]"
+
+
 def build_r2e_initial_prompt(task: Optional[R2EGymTask], current_observation: str) -> str:
     repo = task.repo_name if task is not None else "unknown"
     files = format_relevant_files(task.relevant_files if task is not None else [])
@@ -250,12 +263,18 @@ def build_r2e_followup_prompt(
 ) -> str:
     repo = task.repo_name if task is not None else "unknown"
     history_text = "\n\n".join(history).strip() or "No previous tool calls."
+    issue = format_r2e_issue_for_followup(task)
     return f"""You are a repository-level software engineering agent running inside an R2E-Gym Docker environment.
 You are a programming agent who is provided a github issue and repository bash environment and is tasked to solve code repair and editing tasks to resolve the issue.
 
 Repository: {repo}
 Workspace: /testbed
 Steps completed: {step_count}
+
+Original Github issue:
+<github_issue>
+{issue}
+</github_issue>
 
 Recent history:
 {history_text}
