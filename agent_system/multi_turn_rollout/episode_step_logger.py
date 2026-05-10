@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from pathlib import Path
@@ -62,6 +61,103 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _append_block(lines: list[str], title: str, body: Any) -> None:
+    lines.append("")
+    lines.append("-" * 80)
+    lines.append(title)
+    lines.append("-" * 80)
+    if body is None:
+        lines.append("<none>")
+    elif isinstance(body, str):
+        lines.append(body.rstrip() if body else "<empty>")
+    else:
+        _append_mapping(lines, body)
+
+
+def _append_mapping(lines: list[str], value: Any, indent: int = 0) -> None:
+    prefix = " " * indent
+    value = _json_safe(value)
+    if isinstance(value, dict):
+        if not value:
+            lines.append(prefix + "{}")
+            return
+        for key, item in value.items():
+            if isinstance(item, dict):
+                lines.append(f"{prefix}{key}:")
+                _append_mapping(lines, item, indent + 2)
+            elif isinstance(item, list):
+                if not item:
+                    lines.append(f"{prefix}{key}: []")
+                elif all(not isinstance(entry, (dict, list)) for entry in item) and len(str(item)) <= 160:
+                    lines.append(f"{prefix}{key}: {item}")
+                else:
+                    lines.append(f"{prefix}{key}:")
+                    _append_mapping(lines, item, indent + 2)
+            elif isinstance(item, str) and "\n" in item:
+                lines.append(f"{prefix}{key}:")
+                for line in item.rstrip().splitlines():
+                    lines.append(f"{prefix}  {line}")
+            else:
+                lines.append(f"{prefix}{key}: {item}")
+        return
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            if isinstance(item, (dict, list)):
+                lines.append(f"{prefix}- [{idx}]")
+                _append_mapping(lines, item, indent + 2)
+            else:
+                lines.append(f"{prefix}- {item}")
+        return
+    lines.append(prefix + str(value))
+
+
+def _filtered_env_info(info: Any) -> Dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    hidden = {"raw_model_output", "r2e_action", "r2e_raw_observation"}
+    return {key: value for key, value in info.items() if key not in hidden}
+
+
+def render_step_log(record: Dict[str, Any]) -> str:
+    task = record.get("task", {}) or {}
+    model_output = record.get("model_output", {}) or {}
+    actor = record.get("actor", {}) or {}
+    env = record.get("env", {}) or {}
+
+    lines = [
+        "=" * 80,
+        "R2E EPISODE STEP",
+        "=" * 80,
+        f"train_step: {record.get('train_step')}",
+        f"episode: {record.get('episode')}",
+        f"step: {record.get('step')}",
+    ]
+    _append_block(lines, "TASK", task)
+    _append_block(lines, "MODEL OUTPUT (RAW)", model_output.get("raw_response_text", ""))
+    _append_block(
+        lines,
+        "ACTOR",
+        {
+            "is_action_valid": actor.get("is_action_valid"),
+            "parsed_action": actor.get("parsed_action"),
+        },
+    )
+    _append_block(
+        lines,
+        "ENVIRONMENT",
+        {
+            "reward": env.get("reward"),
+            "done": env.get("done"),
+            "raw_observation": env.get("raw_observation"),
+            "next_observation_for_model": env.get("observation"),
+            "anchor": env.get("anchor"),
+            "info": _filtered_env_info(env.get("info", {})),
+        },
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
 class EpisodeStepLogger:
     def __init__(self, root_dir: Optional[Any], run_log_name: Optional[str], enabled: bool = False) -> None:
         self.enabled = bool(enabled)
@@ -85,7 +181,7 @@ class EpisodeStepLogger:
             f"{self.run_log_name}"
             f"-train_step_{int(train_step):06d}"
             f"-episode_{int(episode):06d}"
-            f"-step_{int(step):06d}.json"
+            f"-step_{int(step):06d}.log"
         )
 
     def write_step(self, train_step: int, episode: int, step: int, payload: Dict[str, Any]) -> Optional[Path]:
@@ -100,8 +196,9 @@ class EpisodeStepLogger:
             "step": int(step),
         }
         record.update(payload)
+        record.pop("model_input", None)
 
         tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(_json_safe(record), ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        tmp_path.write_text(render_step_log(_json_safe(record)), encoding="utf-8")
         tmp_path.replace(path)
         return path

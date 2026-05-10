@@ -1,9 +1,7 @@
-import json
-
 from omegaconf import OmegaConf
 
 
-def test_episode_step_logger_writes_one_structured_file_per_step(tmp_path):
+def test_episode_step_logger_writes_one_readable_log_per_step(tmp_path):
     from agent_system.multi_turn_rollout.episode_step_logger import EpisodeStepLogger
 
     logger = EpisodeStepLogger(
@@ -18,21 +16,36 @@ def test_episode_step_logger_writes_one_structured_file_per_step(tmp_path):
         step=2,
         payload={
             "task": {"task_id": "task-7"},
-            "model_input": {"raw_observation": "initial obs", "raw_prompt_text": "prompt"},
-            "model_output": {"raw_response_text": "<function=finish></function>"},
-            "env": {"reward": 1.0, "done": True},
+            "model_output": {
+                "raw_response_text": "<function=finish></function>",
+                "response_ids": [1, 2, 3],
+            },
+            "actor": {
+                "parsed_action": {"function_name": "finish", "parameters": {"command": "submit"}},
+                "is_action_valid": True,
+            },
+            "env": {
+                "raw_observation": "submitted",
+                "reward": 1.0,
+                "done": True,
+                "info": {"won": True},
+            },
         },
     )
 
-    assert path.name == "r2e_gym_lora_smoke_20260510_083811.log-train_step_000003-episode_000007-step_000002.json"
-    data = json.loads(path.read_text())
-    assert data["train_step"] == 3
-    assert data["episode"] == 7
-    assert data["step"] == 2
-    assert data["task"]["task_id"] == "task-7"
-    assert data["model_input"]["raw_observation"] == "initial obs"
-    assert data["model_output"]["raw_response_text"] == "<function=finish></function>"
-    assert data["env"]["reward"] == 1.0
+    assert path.name == "r2e_gym_lora_smoke_20260510_083811.log-train_step_000003-episode_000007-step_000002.log"
+    text = path.read_text()
+    assert "R2E EPISODE STEP" in text
+    assert "train_step: 3" in text
+    assert "task_id: task-7" in text
+    assert "MODEL OUTPUT" in text
+    assert "<function=finish></function>" in text
+    assert "ACTOR" in text
+    assert "function_name: finish" in text
+    assert "ENVIRONMENT" in text
+    assert "raw_observation:" in text
+    assert "MODEL INPUT" not in text
+    assert "response_ids" not in text
 
 
 def test_episode_step_logger_from_config_can_be_disabled(tmp_path):
