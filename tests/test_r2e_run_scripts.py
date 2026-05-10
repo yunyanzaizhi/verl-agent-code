@@ -16,19 +16,15 @@ def shell_default(script: str, name: str) -> int:
     return int(match.group(1))
 
 
-def test_r2e_grpo_v100_defaults_leave_room_for_reasoned_code_edits():
+def test_r2e_grpo_v100_defaults_use_v100_safe_response_window():
     script = script_text("run_r2e_gym_grpo_v100.sh")
 
-    prompt_length = 8192
-    response_length = shell_default(script, "MAX_RESPONSE_LENGTH")
-    rollout_model_len = shell_default(script, "ROLLOUT_MAX_MODEL_LEN")
-    rollout_batched_tokens = shell_default(script, "ROLLOUT_MAX_NUM_BATCHED_TOKENS")
-    actor_token_len = shell_default(script, "ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU")
-
-    assert response_length >= 2048
-    assert rollout_model_len >= prompt_length + response_length
-    assert rollout_batched_tokens >= prompt_length + response_length
-    assert actor_token_len >= prompt_length + response_length
+    assert shell_default(script, "MAX_RESPONSE_LENGTH") == 1536
+    assert shell_default(script, "ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU") == 8192
+    assert shell_default(script, "ROLLOUT_MAX_MODEL_LEN") == 8192
+    assert shell_default(script, "ROLLOUT_MAX_NUM_BATCHED_TOKENS") == 8192
+    assert "ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.45}" in script
+    assert "actor_rollout_ref.actor.fsdp_config.param_offload=True" in script
 
 
 def test_r2e_lora_smoke_uses_same_response_window_knobs():
