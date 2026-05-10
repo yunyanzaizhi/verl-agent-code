@@ -12,9 +12,9 @@ CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-/home/caiting/verl-agent/checkpoints}
 ENGINE=${ENGINE:-vllm}
 N_GPUS=${N_GPUS:-2}
 TP_SIZE=${TP_SIZE:-${N_GPUS}}
-TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-2}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-4}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-3}
-GROUP_SIZE=${GROUP_SIZE:-2}
+GROUP_SIZE=${GROUP_SIZE:-4}
 NUM_CPUS_PER_ENV_WORKER=${NUM_CPUS_PER_ENV_WORKER:-0.25}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 USE_REMOVE_PADDING=${USE_REMOVE_PADDING:-True}
@@ -24,15 +24,19 @@ MAX_STEPS=${MAX_STEPS:-30}
 HISTORY_LENGTH=${HISTORY_LENGTH:-100}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-768}
 ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU=${ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU:-12288}
-ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-9216}
-ROLLOUT_MAX_MODEL_LEN=${ROLLOUT_MAX_MODEL_LEN:-9216}
+ACTOR_PPO_MINI_BATCH_SIZE=${ACTOR_PPO_MINI_BATCH_SIZE:-4}
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-12288}
+ROLLOUT_MAX_MODEL_LEN=${ROLLOUT_MAX_MODEL_LEN:-12288}
 ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-1024}
-ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.5}
+ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.7}
 ROLLOUT_FREE_CACHE_ENGINE=${ROLLOUT_FREE_CACHE_ENGINE:-True}
 TRAIN_TEMPERATURE=${TRAIN_TEMPERATURE:-0.35}
 TRAIN_TOP_P=${TRAIN_TOP_P:-0.9}
 VAL_TEMPERATURE=${VAL_TEMPERATURE:-0.2}
 VAL_TOP_P=${VAL_TOP_P:-0.9}
+TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-30}
+TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
+PREPARE_DATA=${PREPARE_DATA:-False}
 
 R2E_TRAIN_DATASET=${R2E_TRAIN_DATASET:-R2E-Gym/R2E-Gym-Subset}
 R2E_TRAIN_SPLIT=${R2E_TRAIN_SPLIT:-train}
@@ -72,8 +76,8 @@ export R2E_STEP_LOG_DIR
 export R2E_STEP_LOG_ENABLED=${R2E_STEP_LOG_ENABLED:-1}
 echo "R2E_STEP_LOG_DIR=${R2E_STEP_LOG_DIR}"
 
-if [[ ! -f "${TRAIN_DATA_FILE}" || ! -f "${VAL_DATA_FILE}" ]]; then
-    "$PYTHON_BIN" -m examples.data_preprocess.prepare \
+if [[ "${PREPARE_DATA}" == "True" || "${PREPARE_DATA}" == "true" || ! -f "${TRAIN_DATA_FILE}" || ! -f "${VAL_DATA_FILE}" ]]; then
+    "${PYTHON_BIN}" -m examples.data_preprocess.prepare \
         --mode 'text' \
         --train_data_size "${TRAIN_BATCH_SIZE}" \
         --val_data_size "${VAL_BATCH_SIZE}"
@@ -98,7 +102,7 @@ fi
     actor_rollout_ref.model.enable_activation_offload=True \
     actor_rollout_ref.model.use_remove_padding="${USE_REMOVE_PADDING}" \
     actor_rollout_ref.model.attn_implementation="${ATTN_IMPLEMENTATION}" \
-    actor_rollout_ref.actor.ppo_mini_batch_size=2 \
+    actor_rollout_ref.actor.ppo_mini_batch_size="${ACTOR_PPO_MINI_BATCH_SIZE}" \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu="${ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU}" \
     actor_rollout_ref.actor.use_kl_loss=False \
@@ -167,8 +171,8 @@ fi
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=-1 \
-    trainer.total_training_steps=1 \
-    trainer.total_epochs=1 \
+    trainer.total_training_steps="${TOTAL_TRAINING_STEPS}" \
+    trainer.total_epochs="${TOTAL_EPOCHS}" \
     trainer.val_before_train=False \
     trainer.val_only=False \
     trainer.default_local_dir="${CHECKPOINTS_DIR}/verl_agent_r2e_gym/qwen2p5_coder_3b_grpo_v100" \
