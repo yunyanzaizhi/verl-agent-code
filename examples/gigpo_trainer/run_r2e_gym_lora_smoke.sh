@@ -78,6 +78,7 @@ export TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.rollout.max_num_batched_tokens=9216 \
     actor_rollout_ref.rollout.max_num_seqs=4 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
