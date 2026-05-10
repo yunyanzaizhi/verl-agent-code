@@ -621,6 +621,23 @@ class R2EGymEnvironmentManager(EnvironmentManagerBase):
         }
         return observations, infos
 
+    @staticmethod
+    def _serialize_action(action):
+        if hasattr(action, "function_name"):
+            return {
+                "function_name": str(getattr(action, "function_name", "")),
+                "parameters": dict(getattr(action, "parameters", {}) or {}),
+            }
+        if isinstance(action, dict):
+            result = {
+                "function_name": str(action.get("function_name", "")),
+                "parameters": dict(action.get("parameters", {}) or {}),
+            }
+            if action.get("error"):
+                result["error"] = str(action["error"])
+            return result
+        return {"function_name": "", "parameters": {}, "raw": str(action)}
+
     def step(self, text_actions: List[str]):
         actions, projection_valids = self.projection_f(text_actions)
         next_obs, rewards, dones, infos = self.envs.step(actions)
@@ -631,6 +648,9 @@ class R2EGymEnvironmentManager(EnvironmentManagerBase):
         for idx, info in enumerate(infos):
             env_valid = bool(info.get("is_action_valid", True))
             info["is_action_valid"] = bool(projection_valids[idx] and env_valid)
+            info["raw_model_output"] = str(text_actions[idx]) if idx < len(text_actions) else ""
+            info["r2e_action"] = self._serialize_action(actions[idx] if idx < len(actions) else None)
+            info["r2e_raw_observation"] = str(next_obs[idx]) if idx < len(next_obs) else ""
         next_observations = {
             "text": self.build_text_obs(next_obs),
             "image": None,

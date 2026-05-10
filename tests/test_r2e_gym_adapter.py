@@ -180,6 +180,9 @@ def test_r2e_environment_manager_formats_history_and_success():
     next_obs, rewards, dones, infos = manager.step(["<function=execute_bash><parameter=cmd>pwd</parameter></function>"])
     assert "Tool output" in next_obs["text"][0]
     assert "execute_bash" in next_obs["text"][0]
+    assert infos[0]["raw_model_output"] == "<function=execute_bash><parameter=cmd>pwd</parameter></function>"
+    assert infos[0]["r2e_action"] == {"function_name": "execute_bash", "parameters": {"cmd": "pwd"}}
+    assert infos[0]["r2e_raw_observation"] == "Tool output"
     assert np.array_equal(rewards, np.array([0.0]))
     assert np.array_equal(dones, np.array([False]))
 

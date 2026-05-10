@@ -23,6 +23,7 @@ from transformers import PreTrainedTokenizer
 import uuid
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
+from agent_system.multi_turn_rollout.episode_step_logger import EpisodeStepLogger, _json_safe
 from typing import List, Dict
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 
@@ -39,6 +40,131 @@ class TrajectoryCollector:
         self.config = config
         self.tokenizer = tokenizer
         self.processor = processor
+        self.episode_step_logger = EpisodeStepLogger.from_config(config)
+
+    @staticmethod
+    def _values_to_list(values, batch_size: int):
+        if values is None:
+            return [None] * batch_size
+        if isinstance(values, torch.Tensor):
+            values = values.detach().cpu().numpy()
+        if isinstance(values, np.ndarray):
+            values = values.tolist()
+        if isinstance(values, tuple):
+            values = list(values)
+        if isinstance(values, list):
+            result = values
+        else:
+            result = [values] * batch_size
+        if len(result) < batch_size:
+            result = result + [None] * (batch_size - len(result))
+        return result[:batch_size]
+
+    @staticmethod
+    def _tensor_row(data, key: str, idx: int):
+        if key not in data.keys():
+            return None
+        value = data[key][idx]
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().tolist()
+        return _json_safe(value)
+
+    @staticmethod
+    def _obs_item(obs: Dict, key: str, idx: int):
+        values = obs.get(key, None)
+        if values is None:
+            return None
+        try:
+            value = values[idx]
+        except Exception:
+            return None
+        return _json_safe(value)
+
+    @staticmethod
+    def _pop_non_tensor_list(batch: DataProto, key: str, batch_size: int):
+        if key not in batch.non_tensor_batch:
+            return [None] * batch_size
+        values = batch.non_tensor_batch.pop(key)
+        return TrajectoryCollector._values_to_list(values, batch_size)
+
+    def _write_episode_step_logs(
+        self,
+        train_step: int,
+        rollout_step: int,
+        active_masks: np.ndarray,
+        obs: Dict,
+        next_obs: Dict,
+        rewards,
+        dones,
+        infos: List[Dict],
+        uid_batch: np.ndarray,
+        traj_uid: np.ndarray,
+        raw_prompt_texts: List,
+        raw_prompt_chats: List,
+        raw_observation_texts: List,
+        raw_anchor_obs: List,
+        input_ids: List,
+        attention_masks: List,
+        position_ids: List,
+        response_ids: List,
+        rollout_log_probs: List,
+        text_actions: List[str],
+    ) -> None:
+        if not self.episode_step_logger.enabled:
+            return
+
+        rewards_list = self._values_to_list(torch_to_numpy(rewards, is_object=True), len(infos))
+        dones_list = self._values_to_list(torch_to_numpy(dones, is_object=True), len(infos))
+        active_list = self._values_to_list(active_masks, len(infos))
+        for episode_idx in range(len(infos)):
+            if not bool(active_list[episode_idx]):
+                continue
+            info = infos[episode_idx] or {}
+            parsed_action = info.get("r2e_action")
+            payload = {
+                "task": {
+                    "task_id": info.get("task_id"),
+                    "repo_name": info.get("repo_name"),
+                    "docker_image": info.get("docker_image"),
+                    "group_uid": _json_safe(uid_batch[episode_idx]) if episode_idx < len(uid_batch) else None,
+                    "traj_uid": _json_safe(traj_uid[episode_idx]) if episode_idx < len(traj_uid) else None,
+                },
+                "model_input": {
+                    "obs_text": self._obs_item(obs, "text", episode_idx),
+                    "obs_anchor": self._obs_item(obs, "anchor", episode_idx),
+                    "raw_observation_text": raw_observation_texts[episode_idx],
+                    "raw_anchor_obs": raw_anchor_obs[episode_idx],
+                    "raw_prompt_chat": raw_prompt_chats[episode_idx],
+                    "raw_prompt_text": raw_prompt_texts[episode_idx],
+                    "input_ids": input_ids[episode_idx],
+                    "attention_mask": attention_masks[episode_idx],
+                    "position_ids": position_ids[episode_idx],
+                },
+                "model_output": {
+                    "raw_response_text": text_actions[episode_idx] if episode_idx < len(text_actions) else "",
+                    "response_ids": response_ids[episode_idx],
+                    "rollout_log_probs": rollout_log_probs[episode_idx],
+                },
+                "actor": {
+                    "raw_model_output": info.get("raw_model_output", text_actions[episode_idx] if episode_idx < len(text_actions) else ""),
+                    "parsed_action": parsed_action,
+                    "is_action_valid": info.get("is_action_valid"),
+                },
+                "env": {
+                    "raw_observation": info.get("r2e_raw_observation"),
+                    "observation": self._obs_item(next_obs, "text", episode_idx),
+                    "anchor": self._obs_item(next_obs, "anchor", episode_idx),
+                    "reward": rewards_list[episode_idx],
+                    "done": dones_list[episode_idx],
+                    "info": info,
+                },
+            }
+            self.episode_step_logger.write_step(
+                train_step=train_step,
+                episode=episode_idx,
+                step=rollout_step,
+                payload=payload,
+            )
 
     def preprocess_single_sample(
         self,
@@ -177,6 +303,9 @@ class TrajectoryCollector:
             'attention_mask': attention_mask[0],
             'position_ids': position_ids[0],
             'raw_prompt_ids': raw_prompt_ids,
+            'raw_prompt_text': raw_prompt,
+            'raw_observation_text': obs_text,
+            'raw_anchor_obs': _obs_anchor,
             'anchor_obs': _obs_anchor,
             'index': item,
             'data_source': data_source
@@ -287,6 +416,7 @@ class TrajectoryCollector:
             gen_batch: DataProto, 
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
+            train_step: int = 0,
             ) -> DataProto:
         """
         Collects trajectories through parallel agent-environment agent_loop.
@@ -333,6 +463,13 @@ class TrajectoryCollector:
             active_masks = np.logical_not(is_done)
 
             batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
+            raw_prompt_texts = self._pop_non_tensor_list(batch, "raw_prompt_text", batch_size)
+            raw_observation_texts = self._pop_non_tensor_list(batch, "raw_observation_text", batch_size)
+            raw_anchor_obs = self._pop_non_tensor_list(batch, "raw_anchor_obs", batch_size)
+            raw_prompt_chats = self._values_to_list(batch.non_tensor_batch.get("raw_prompt", None), batch_size)
+            input_ids_for_log = [self._tensor_row(batch.batch, "input_ids", idx) for idx in range(batch_size)]
+            attention_masks_for_log = [self._tensor_row(batch.batch, "attention_mask", idx) for idx in range(batch_size)]
+            position_ids_for_log = [self._tensor_row(batch.batch, "position_ids", idx) for idx in range(batch_size)]
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -363,6 +500,31 @@ class TrajectoryCollector:
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
+            response_ids_for_log = [self._tensor_row(batch.batch, "responses", idx) for idx in range(batch_size)]
+            rollout_log_probs_for_log = [self._tensor_row(batch.batch, "rollout_log_probs", idx) for idx in range(batch_size)]
+
+            self._write_episode_step_logs(
+                train_step=train_step,
+                rollout_step=_step + 1,
+                active_masks=active_masks,
+                obs=obs,
+                next_obs=next_obs,
+                rewards=rewards,
+                dones=dones,
+                infos=infos,
+                uid_batch=uid_batch,
+                traj_uid=traj_uid,
+                raw_prompt_texts=raw_prompt_texts,
+                raw_prompt_chats=raw_prompt_chats,
+                raw_observation_texts=raw_observation_texts,
+                raw_anchor_obs=raw_anchor_obs,
+                input_ids=input_ids_for_log,
+                attention_masks=attention_masks_for_log,
+                position_ids=position_ids_for_log,
+                response_ids=response_ids_for_log,
+                rollout_log_probs=rollout_log_probs_for_log,
+                text_actions=text_actions,
+            )
 
             
             if len(rewards.shape) == 2:
@@ -418,6 +580,7 @@ class TrajectoryCollector:
             gen_batch: DataProto, 
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
+            train_step: int = 0,
             ) -> DataProto:
         """
         Conduct dynamic rollouts until a target batch size is met. 
@@ -455,6 +618,7 @@ class TrajectoryCollector:
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
+                train_step=train_step,
             )
             batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings = filter_group_data(batch_list=batch_list, 
                                                                                                 episode_rewards=episode_rewards, 
@@ -487,6 +651,7 @@ class TrajectoryCollector:
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
             is_train: bool = True,
+            train_step: int = 0,
             ) -> DataProto:
         """
         Select and run the appropriate rollout loop (dynamic or vanilla).
@@ -511,6 +676,7 @@ class TrajectoryCollector:
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
+                train_step=train_step,
             )
         else:
             # Vanilla Sampling   
@@ -519,6 +685,7 @@ class TrajectoryCollector:
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
+                train_step=train_step,
             )
         assert len(total_batch_list) == len(total_episode_rewards)
         assert len(total_batch_list) == len(total_episode_lengths)

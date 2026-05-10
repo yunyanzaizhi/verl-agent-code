@@ -332,6 +332,9 @@ env:
     reward_timeout: 300
     auto_submit_on_max_steps: True
     verbose: False
+    step_log_enabled: False
+    step_log_dir: null
+    run_log_name: null
     command_files:
       - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/r2egym/file_editor.py
       - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/search.py
