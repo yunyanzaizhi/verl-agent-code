@@ -13,6 +13,10 @@ class ParsedR2EAction:
 
 
 _FUNCTION_BLOCK_RE = re.compile(r"<function\s*=\s*[^>]+>.*?</function>", re.DOTALL | re.IGNORECASE)
+MULTIPLE_TOOL_CALLS_WARNING = (
+    "multiple XML tool calls were found; only the first tool call was executed, "
+    "please output exactly one tool call."
+)
 _FILE_EDITOR_COMMANDS = {"view", "create", "str_replace", "insert", "undo_edit"}
 _TOOL_SCHEMAS = {
     "execute_bash": {
@@ -106,10 +110,11 @@ def parse_r2e_gym_action(text: str) -> ParsedR2EAction:
         return ParsedR2EAction(_invalid_action(error), False, error)
 
     blocks = _FUNCTION_BLOCK_RE.findall(str(text))
-    if len(blocks) != 1:
+    if not blocks:
         error = "Action format error: output must contain exactly one <function=...>...</function> XML tool call."
         return ParsedR2EAction(_invalid_action(error), False, error)
 
+    warning = MULTIPLE_TOOL_CALLS_WARNING if len(blocks) > 1 else ""
     block = blocks[0].strip()
     try:
         action = Action.from_string(block)
@@ -123,6 +128,8 @@ def parse_r2e_gym_action(text: str) -> ParsedR2EAction:
     schema_error = _schema_error(action)
     if schema_error:
         return ParsedR2EAction(_invalid_action(schema_error), False, schema_error)
+    if warning:
+        action.parse_warning = warning
     return ParsedR2EAction(action, True, "")
 
 

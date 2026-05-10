@@ -624,10 +624,14 @@ class R2EGymEnvironmentManager(EnvironmentManagerBase):
     @staticmethod
     def _serialize_action(action):
         if hasattr(action, "function_name"):
-            return {
+            result = {
                 "function_name": str(getattr(action, "function_name", "")),
                 "parameters": dict(getattr(action, "parameters", {}) or {}),
             }
+            parse_warning = getattr(action, "parse_warning", "")
+            if parse_warning:
+                result["parse_warning"] = str(parse_warning)
+            return result
         if isinstance(action, dict):
             result = {
                 "function_name": str(action.get("function_name", "")),
@@ -644,7 +648,15 @@ class R2EGymEnvironmentManager(EnvironmentManagerBase):
         from agent_system.environments.env_package.r2e_gym.prompts import format_r2e_action_for_history
 
         action_history = [format_r2e_action_for_history(action) for action in actions]
-        self.memory.store({"text_obs": next_obs, "action": action_history})
+        parse_warnings = [str(getattr(action, "parse_warning", "") or "") for action in actions]
+        next_obs_for_prompt = []
+        for idx, observation in enumerate(next_obs):
+            warning = parse_warnings[idx] if idx < len(parse_warnings) else ""
+            if warning:
+                next_obs_for_prompt.append(f"{observation}\n\nAction parse warning: {warning}")
+            else:
+                next_obs_for_prompt.append(observation)
+        self.memory.store({"text_obs": next_obs_for_prompt, "action": action_history})
         for idx, info in enumerate(infos):
             env_valid = bool(info.get("is_action_valid", True))
             info["is_action_valid"] = bool(projection_valids[idx] and env_valid)
@@ -652,7 +664,7 @@ class R2EGymEnvironmentManager(EnvironmentManagerBase):
             info["r2e_action"] = self._serialize_action(actions[idx] if idx < len(actions) else None)
             info["r2e_raw_observation"] = str(next_obs[idx]) if idx < len(next_obs) else ""
         next_observations = {
-            "text": self.build_text_obs(next_obs),
+            "text": self.build_text_obs(next_obs_for_prompt),
             "image": None,
             "anchor": np.array(self.task_ids, dtype=object),
         }

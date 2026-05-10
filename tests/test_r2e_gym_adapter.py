@@ -81,6 +81,33 @@ def test_r2e_gym_projection_rejects_tool_calls_missing_argparse_parameters():
     assert "search_term" in actions[4]["error"]
 
 
+def test_r2e_gym_projection_uses_first_tool_call_when_multiple_blocks():
+    from r2egym.agenthub.action import Action
+
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+
+    actions, valids = r2e_gym_projection(
+        [
+            """
+            I should inspect first.
+            <function=execute_bash>
+              <parameter=cmd>pwd</parameter>
+            </function>
+            <function=finish>
+              <parameter=command>submit</parameter>
+            </function>
+            """
+        ]
+    )
+
+    assert valids == [1]
+    assert isinstance(actions[0], Action)
+    assert actions[0].function_name == "execute_bash"
+    assert actions[0].parameters == {"cmd": "pwd"}
+    assert "only the first tool call was executed" in actions[0].parse_warning
+    assert "please output exactly one" in actions[0].parse_warning
+
+
 def test_r2e_prompt_documents_exact_argparse_aligned_xml_schema():
     from agent_system.environments.env_package.r2e_gym.prompts import R2E_ACTION_RULES, R2E_TOOL_SPEC
 
@@ -298,3 +325,39 @@ def test_r2e_environment_manager_formats_history_and_success():
         total_batch_list=[[{"active_masks": True}, {"active_masks": True}]],
     )
     assert np.array_equal(success["success_rate"], np.array([1.0]))
+
+
+def test_r2e_environment_manager_reports_multiple_tool_call_warning_in_feedback():
+    from omegaconf import OmegaConf
+
+    from agent_system.environments.env_manager import R2EGymEnvironmentManager
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+
+    class FakeVectorEnv:
+        def reset(self, kwargs=None):
+            return ["Initial issue"], [{"task_id": "task-1", "repo_name": "demo_repo", "docker_image": "img"}]
+
+        def step(self, actions):
+            assert actions[0].function_name == "execute_bash"
+            return ["Tool output"], [0.0], [False], [{"won": False, "is_action_valid": True, "task_id": "task-1"}]
+
+        def close(self):
+            pass
+
+    manager = R2EGymEnvironmentManager(FakeVectorEnv(), r2e_gym_projection, OmegaConf.create({"env": {"history_length": 2}}))
+    manager.reset(kwargs=None)
+
+    next_obs, _rewards, _dones, infos = manager.step(
+        [
+            """
+            I should inspect first.
+            <function=execute_bash><parameter=cmd>pwd</parameter></function>
+            <function=finish><parameter=command>submit</parameter></function>
+            """
+        ]
+    )
+
+    assert infos[0]["is_action_valid"] is True
+    assert "only the first tool call was executed" in infos[0]["r2e_action"]["parse_warning"]
+    assert "only the first tool call was executed" in next_obs["text"][0]
+    assert "Tool output" in next_obs["text"][0]
