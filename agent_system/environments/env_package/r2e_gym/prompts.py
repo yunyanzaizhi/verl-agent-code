@@ -3,16 +3,40 @@ from typing import Iterable, List, Optional
 from .tasks import R2EGymTask
 
 
-R2E_TOOL_SPEC = """Available tools:
-- execute_bash: run a shell command inside /testbed. Required parameter: cmd.
-- file_editor: view, create, str_replace, insert, or undo_edit files. Required parameters depend on the command.
-- search: search for a term in a file or directory. Required parameter: search_term.
-- finish: submit the final repository patch. Use <function=finish><parameter=command>submit</parameter></function> when done.
+R2E_TOOL_SPEC = """Available tools and argparse-aligned parameters:
+- execute_bash: run a shell command inside /testbed. Required XML parameter: cmd.
+- file_editor: edit or inspect files. Required XML parameter: command. Use command values view, create, str_replace, insert, or undo_edit. Use path for the target file or directory; do not use file_path.
+- search: search for a term in a file or directory. Required XML parameter: search_term. Optional parameters: path, python_only.
+- finish: submit the final repository patch. Use command=submit when done.
 """
 
-R2E_ACTION_RULES = """Your response must be exactly one XML tool call and nothing else:
-<function=tool_name>
-  <parameter=name>value</parameter>
+R2E_ACTION_RULES = """Your response must be exactly one XML tool call and nothing else.
+Use <parameter=actual_argparse_name>value</parameter>. Do not write JSON, markdown, unkeyed parameter tags, or parameter tags with the literal name placeholder.
+
+Valid examples:
+<function=execute_bash>
+  <parameter=cmd>ls -la /testbed</parameter>
+</function>
+
+<function=file_editor>
+  <parameter=command>view</parameter>
+  <parameter=path>/testbed/path/to/file.py</parameter>
+</function>
+
+<function=file_editor>
+  <parameter=command>str_replace</parameter>
+  <parameter=path>/testbed/path/to/file.py</parameter>
+  <parameter=old_str>old text</parameter>
+  <parameter=new_str>new text</parameter>
+</function>
+
+<function=search>
+  <parameter=search_term>symbol_or_text</parameter>
+  <parameter=path>/testbed</parameter>
+</function>
+
+<function=finish>
+  <parameter=command>submit</parameter>
 </function>
 """
 

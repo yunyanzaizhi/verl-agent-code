@@ -60,6 +60,37 @@ def test_r2e_gym_projection_marks_malformed_output_invalid():
     assert "format" in actions[0]["error"].lower()
 
 
+def test_r2e_gym_projection_rejects_tool_calls_missing_argparse_parameters():
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+
+    actions, valids = r2e_gym_projection(
+        [
+            "<function=execute_bash><parameter=name>pwd</parameter></function>",
+            "<function=execute_bash><parameter>cmd='pwd'</parameter></function>",
+            "<function=file_editor><parameter=path>/testbed/a.py</parameter></function>",
+            "<function=file_editor><parameter=command>view</parameter><parameter=file_path>/testbed/a.py</parameter></function>",
+            "<function=search><parameter=query>needle</parameter></function>",
+        ]
+    )
+
+    assert valids == [0, 0, 0, 0, 0]
+    assert "cmd" in actions[0]["error"]
+    assert "cmd" in actions[1]["error"]
+    assert "command" in actions[2]["error"]
+    assert "path" in actions[3]["error"]
+    assert "search_term" in actions[4]["error"]
+
+
+def test_r2e_prompt_documents_exact_argparse_aligned_xml_schema():
+    from agent_system.environments.env_package.r2e_gym.prompts import R2E_ACTION_RULES
+
+    assert "<parameter=cmd>" in R2E_ACTION_RULES
+    assert "<parameter=command>view</parameter>" in R2E_ACTION_RULES
+    assert "<parameter=path>" in R2E_ACTION_RULES
+    assert "<parameter=search_term>" in R2E_ACTION_RULES
+    assert "<parameter=name>value</parameter>" not in R2E_ACTION_RULES
+
+
 class FakeRepoEnv:
     created = []
 
