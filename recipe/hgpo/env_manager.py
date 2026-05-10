@@ -598,7 +598,19 @@ def make_envs(config):
     group_n = config.env.rollout.n if config.env.rollout.n > 0 else 1
     resources_per_worker = OmegaConf.to_container(config.env.resources_per_worker, resolve=True)
 
-    if "search" in config.env.env_name.lower():
+    if "r2e_gym" in config.env.env_name.lower() or config.env.env_name.lower() in ["r2e", "r2egym"]:
+        from agent_system.environments.env_manager import R2EGymEnvironmentManager
+        from agent_system.environments.env_package.r2e_gym import build_r2e_gym_envs, r2e_gym_projection
+
+        if config.trainer.val_only:
+            envs = None
+        else:
+            _envs = build_r2e_gym_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
+            envs = R2EGymEnvironmentManager(_envs, r2e_gym_projection, config)
+        _val_envs = build_r2e_gym_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)
+        val_envs = R2EGymEnvironmentManager(_val_envs, r2e_gym_projection, config)
+        return envs, val_envs
+    elif "search" in config.env.env_name.lower():
         from agent_system.environments.env_package.search import build_search_envs, search_projection
         projection_f = partial(search_projection)
         if config.trainer.val_only:
