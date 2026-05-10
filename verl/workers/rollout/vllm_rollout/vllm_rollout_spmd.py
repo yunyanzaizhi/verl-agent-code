@@ -167,6 +167,7 @@ class vLLMRollout(BaseRollout):
         if config.get("limit_images", None):  # support for multi-image data
             engine_kwargs["limit_mm_per_prompt"] = {"image": config.get("limit_images")}
 
+        enable_prefix_caching = bool(config.get("enable_prefix_caching", True))
         compilation_config = {}
 
         cudagraph_capture_sizes = config.get("cudagraph_capture_sizes")
@@ -198,7 +199,7 @@ class vLLMRollout(BaseRollout):
             disable_log_stats=config.disable_log_stats,
             max_num_batched_tokens=max_num_batched_tokens,
             enable_chunked_prefill=config.enable_chunked_prefill,
-            enable_prefix_caching=True,
+            enable_prefix_caching=enable_prefix_caching,
             trust_remote_code=trust_remote_code,
             seed=config.get("seed", 0),
             **compilation_config,

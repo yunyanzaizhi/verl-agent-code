@@ -30,6 +30,7 @@ ROLLOUT_MAX_MODEL_LEN=${ROLLOUT_MAX_MODEL_LEN:-9216}
 ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-1024}
 ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.50}
 ROLLOUT_FREE_CACHE_ENGINE=${ROLLOUT_FREE_CACHE_ENGINE:-True}
+ROLLOUT_ENABLE_PREFIX_CACHING=${ROLLOUT_ENABLE_PREFIX_CACHING:-False}
 TRAIN_TEMPERATURE=${TRAIN_TEMPERATURE:-0.35}
 TRAIN_TOP_P=${TRAIN_TOP_P:-0.9}
 VAL_TEMPERATURE=${VAL_TEMPERATURE:-0.2}
@@ -129,6 +130,7 @@ fi
     actor_rollout_ref.rollout.max_num_batched_tokens="${ROLLOUT_MAX_NUM_BATCHED_TOKENS}" \
     actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN}" \
     actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}" \
+    +actor_rollout_ref.rollout.enable_prefix_caching="${ROLLOUT_ENABLE_PREFIX_CACHING}" \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.val_kwargs.temperature="${VAL_TEMPERATURE}" \
     actor_rollout_ref.rollout.val_kwargs.top_p="${VAL_TOP_P}" \
