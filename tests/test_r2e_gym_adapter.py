@@ -82,13 +82,61 @@ def test_r2e_gym_projection_rejects_tool_calls_missing_argparse_parameters():
 
 
 def test_r2e_prompt_documents_exact_argparse_aligned_xml_schema():
-    from agent_system.environments.env_package.r2e_gym.prompts import R2E_ACTION_RULES
+    from agent_system.environments.env_package.r2e_gym.prompts import R2E_ACTION_RULES, R2E_TOOL_SPEC
 
-    assert "<parameter=cmd>" in R2E_ACTION_RULES
-    assert "<parameter=command>view</parameter>" in R2E_ACTION_RULES
-    assert "<parameter=path>" in R2E_ACTION_RULES
-    assert "<parameter=search_term>" in R2E_ACTION_RULES
+    assert "BEGIN FUNCTION #1: file_editor" in R2E_TOOL_SPEC
+    assert "Notes for using the str_replace command" in R2E_TOOL_SPEC
+    assert "cmd (string, required)" in R2E_TOOL_SPEC
+    assert "Can be \"ctrl+c\"" in R2E_TOOL_SPEC
+    assert "search_term (string, required)" in R2E_TOOL_SPEC
+    assert "Currently allowed value: [submit]" in R2E_TOOL_SPEC
+
+    assert "Each response must include both reasoning (as natural text) and function call" in R2E_ACTION_RULES
+    assert "Your response must be exactly one XML tool call and nothing else" not in R2E_ACTION_RULES
     assert "<parameter=name>value</parameter>" not in R2E_ACTION_RULES
+
+
+def test_r2e_initial_prompt_uses_r2e_code_repair_workflow():
+    from agent_system.environments.env_package.r2e_gym.prompts import build_r2e_initial_prompt
+    from agent_system.environments.env_package.r2e_gym.tasks import normalize_r2e_task_record
+
+    task = normalize_r2e_task_record(sample_r2e_record(), "dataset", "train", 0)
+    prompt = build_r2e_initial_prompt(task, "Fix the parser when input is split.")
+
+    assert "I have uploaded a python code repository in the /testbed directory." in prompt
+    assert "<github_issue>" in prompt
+    assert "1. First, explore the codebase" in prompt
+    assert "2. Assess whether you can reproduce the issue" in prompt
+    assert "3. Analyze the root cause" in prompt
+    assert "4. Implement your solution" in prompt
+    assert "5. Verify your solution" in prompt
+    assert "6. Run unit tests" in prompt
+    assert "7. Test edge cases" in prompt
+    assert "8. Refine if necessary" in prompt
+    assert "9. Submit your solution" in prompt
+    assert "DO NOT MODIFY any of the existing unit tests" in prompt
+
+
+def test_r2e_projection_accepts_reasoning_before_xml_tool_call():
+    from r2egym.agenthub.action import Action
+
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+
+    actions, valids = r2e_gym_projection(
+        [
+            """
+            I will first inspect the repository root to understand its structure.
+            <function=execute_bash>
+              <parameter=cmd>ls -la /testbed</parameter>
+            </function>
+            """
+        ]
+    )
+
+    assert valids == [1]
+    assert isinstance(actions[0], Action)
+    assert actions[0].function_name == "execute_bash"
+    assert actions[0].parameters == {"cmd": "ls -la /testbed"}
 
 
 class FakeRepoEnv:
