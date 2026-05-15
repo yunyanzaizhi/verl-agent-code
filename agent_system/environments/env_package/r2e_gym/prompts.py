@@ -97,96 +97,90 @@ The result text or final message to submit. Defaults to an empty string if not p
 
 -- END FUNCTION #4 --"""
 
-R2E_ACTION_RULES = """Each response must include both reasoning (as natural text) and function call to solve the task.
-Always provide concise natural-language reasoning before the function call. Then include exactly one function call in the following format, with no text after </function>:
+R2E_ACTION_RULES = """Each response must include both reasoning (as natural text) and exactly one function call.
 
-<function=example_function_name>
-<parameter=example_parameter_1>value_1</parameter>
-<parameter=example_parameter_2>
-This is the value for the second parameter
-that can span
-multiple lines
-</parameter>
+## Format
+
+<function=TOOL_NAME>
+<parameter=PARAM_NAME>value</parameter>
 </function>
 
-Important:
-- Function calls MUST follow the specified format, start with <function= and end with </function>.
-- Required parameters MUST be specified.
-- Use <parameter=actual_argparse_name>value</parameter>. Do not write JSON, markdown tool blocks, unkeyed parameter tags, or parameter tags with a literal name placeholder.
+CRITICAL FORMAT RULES:
+- Every parameter tag MUST use the <parameter=NAME> syntax. The equals sign and parameter name go inside the opening tag.
+- Do NOT write <command>view</command>. Write <parameter=command>view</parameter> instead.
+- Do NOT write <path>/testbed</path>. Write <parameter=path>/testbed</parameter> instead.
+- Do NOT write <cmd>ls</cmd>. Write <parameter=cmd>ls</parameter> instead.
+
+## Examples
+
+Example 1 - View a directory:
+<function=file_editor>
+<parameter=command>view</parameter>
+<parameter=path>/testbed</parameter>
+</function>
+
+Example 2 - View a file with line range:
+<function=file_editor>
+<parameter=command>view</parameter>
+<parameter=path>/testbed/src/module.py</parameter>
+<parameter=view_range>[1, 50]</parameter>
+</function>
+
+Example 3 - Run a bash command:
+<function=execute_bash>
+<parameter=cmd>grep -rn "def my_function" /testbed/src/</parameter>
+</function>
+
+Example 4 - Search for a term:
+<function=search>
+<parameter=search_term>class MyClass</parameter>
+<parameter=path>/testbed/src</parameter>
+</function>
+
+Example 5 - Edit a file:
+<function=file_editor>
+<parameter=command>str_replace</parameter>
+<parameter=path>/testbed/src/module.py</parameter>
+<parameter=old_str>def my_function(x):
+    return x</parameter>
+<parameter=new_str>def my_function(x):
+    if x is None:
+        raise ValueError("x must not be None")
+    return x</parameter>
+</function>
+
+Example 6 - Submit when done:
+<function=finish>
+<parameter=command>submit</parameter>
+<parameter=result>Fixed the issue by adding input validation.</parameter>
+</function>
+
+## Rules
 - Only call one function at a time.
-- Use cmd for execute_bash, command/path for file_editor, search_term/path for search, and command=submit for finish.
+- No text after </function>.
+- Always start by exploring the repository structure with file_editor view on /testbed, then locate the relevant source files.
+- Do NOT submit until you have actually edited files and verified the fix works.
 """
 
 R2E_CODE_REPAIR_WORKFLOW = """Follow these steps to resolve the issue:
-1. First, explore the codebase to locate and understand the code relevant to the <github_issue>.
-   - Use efficient search commands to identify key files and functions (i.e. use grep instead of search).
-   - Err on the side of caution and look at various relevant files and build your understanding of:
-     - how the code works
-     - what the expected behaviors and edge cases are
-     - what the potential root causes for the given issue are
+1. EXPLORE: Use file_editor to view /testbed directory structure first, then locate the relevant source files.
+   - Start with: file_editor view /testbed to see the project layout.
+   - Use search or execute_bash with grep to find the relevant code.
+   - Do NOT guess file paths. Always explore first.
 
-2. Assess whether you can reproduce the issue:
-   - Create a script at /testbed/reproduce_issue.py that demonstrates the error.
-   - Execute this script to confirm the error behavior.
-   - You should reproduce the issue before fixing it.
-   - Your reproduction script should also assert the expected behavior for the fixed code.
+2. REPRODUCE: Create a script at /testbed/reproduce_issue.py that demonstrates the error, then run it.
 
-3. Analyze the root cause:
-   - Identify the underlying problem based on your code exploration and reproduction results.
-   - Critically analyze different potential approaches to fix the issue.
-   - Explicitly reason about multiple approaches, then choose the most elegant and effective solution considering correctness, generality, side effects, and tradeoffs.
-   - Reason about execution paths, edge cases, and other potential issues. Look at unit tests to understand expected behavior.
+3. ANALYZE: Identify the root cause from exploration and reproduction results.
 
-4. Implement your solution:
-   - Make targeted changes to the necessary files following idiomatic code patterns once you determine the root cause.
-   - Be thorough and methodical.
+4. IMPLEMENT: Use file_editor str_replace to make targeted changes to fix the issue.
 
-5. Verify your solution:
-   - Rerun your reproduction script to confirm the error is fixed.
-   - If verification fails, iterate on your solution until successful. If the reproduction script is buggy, adjust it as needed.
+5. VERIFY: Rerun your reproduction script to confirm the fix works.
 
-6. Run unit tests:
-   - Find and run the relevant unit tests for the performed fix.
-   - Run unit tests to ensure your solution is correct and does not cause regressions.
-   - If unit tests do not pass, consider whether the tests do not reflect the new expected behavior. If so, write additional edge test cases.
-   - Use the existing test runner to run the relevant tests. For example:
-     - python -m pytest -xvs sympy/physics/units/tests/test_dimensions_transcendental.py
-     - python -m pytest tests/test_domain_py.py::test_pymethod_options
-     - ./tests/runtests.py constraints.tests.CheckConstraintTests -v 2
-   - RUN ALL relevant unit tests.
-   - DO NOT MODIFY any of the existing unit tests. You can add new edge test cases in a separate file if needed, BUT DO NOT MODIFY THE EXISTING TESTS.
+6. TEST: Run relevant unit tests to ensure no regressions.
 
-7. Test edge cases:
-   - Identify potential edge cases that might challenge your solution.
-   - Create additional test cases in a separate file /testbed/edge_case_tests.py.
-   - Execute these tests to verify your solution's robustness.
-   - Run multiple rounds of edge cases. When creating edge cases:
-     - Consider complex scenarios beyond the original issue description.
-     - Test for regressions to ensure existing functionality remains intact.
-     - At each round, write multiple edge test cases in the same file to be efficient.
+7. SUBMIT: Only after verification passes, use finish with command=submit.
 
-8. Refine if necessary:
-   - If edge case testing reveals issues, refine your solution accordingly.
-   - Ensure your final implementation handles all identified scenarios correctly.
-   - Document any assumptions or limitations of your solution.
-
-9. Submit your solution:
-   - Once you have verified your solution, submit your solution using the finish tool.
-
-A successful resolution means:
-- The specific error or issue described no longer occurs.
-- Your changes maintain compatibility with existing functionality.
-- Edge cases are properly handled.
-
-Additional recommendations:
-- Be thorough, methodical, and prioritize quality over speed.
-- Think carefully before making each tool call about what should be done. However, each step should only use one tool call.
-- Do not use tools inside your thought process. Use thinking for identifying the root cause, making changes, and creating reproduction or edge case tests.
-- Each action is somewhat expensive. Wherever possible, combine multiple actions into a single action.
-- Grep commands should identify both relevant files and line numbers so you can use the file_editor tool.
-- Use grep with -A, -B, and -C flags to quickly identify relevant code blocks during exploration.
-- Use targeted search patterns to minimize unnecessary operations.
-- When creating edge cases, look at relevant existing tests to understand regression cases. Ensure the fix does not break existing functionality.
+IMPORTANT: Do NOT submit until you have actually used file_editor to edit files and verified the fix.
 """
 
 
@@ -231,8 +225,8 @@ def build_r2e_initial_prompt(task: Optional[R2EGymTask], current_observation: st
     repo = task.repo_name if task is not None else "unknown"
     files = format_relevant_files(task.relevant_files if task is not None else [])
     issue = current_observation.strip()
-    return f"""You are a repository-level software engineering agent running inside an R2E-Gym Docker environment.
-You are a programming agent who is provided a github issue and repository bash environment and is tasked to solve code repair and editing tasks to resolve the issue.
+    return f"""You are a software engineering agent inside a Docker environment at /testbed.
+Your task: fix the github issue below by editing source files.
 
 Repository: {repo}
 Workspace: /testbed
@@ -241,9 +235,6 @@ Relevant files:
 
 {R2E_TOOL_SPEC}
 
-I have uploaded a python code repository in the /testbed directory.
-
-Now consider the following Github issue:
 <github_issue>
 {issue}
 </github_issue>
@@ -264,14 +255,10 @@ def build_r2e_followup_prompt(
     repo = task.repo_name if task is not None else "unknown"
     history_text = "\n\n".join(history).strip() or "No previous tool calls."
     issue = format_r2e_issue_for_followup(task)
-    return f"""You are a repository-level software engineering agent running inside an R2E-Gym Docker environment.
-You are a programming agent who is provided a github issue and repository bash environment and is tasked to solve code repair and editing tasks to resolve the issue.
+    return f"""You are a software engineering agent inside a Docker environment at /testbed.
+Repository: {repo} | Steps completed: {step_count}
 
-Repository: {repo}
-Workspace: /testbed
-Steps completed: {step_count}
-
-Original Github issue:
+Original issue:
 <github_issue>
 {issue}
 </github_issue>
@@ -282,7 +269,8 @@ Recent history:
 Current observation:
 {current_observation}
 
-Continue following the R2E code repair workflow: explore, reproduce, analyze, implement, verify, test, check edge cases, refine, and submit only when ready.
+Continue working. Remember:
+- Do NOT submit until you have actually edited files and verified the fix.
+- Start by exploring /testbed if you haven't yet.
 
-{R2E_TOOL_SPEC}
 {R2E_ACTION_RULES}"""

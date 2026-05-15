@@ -120,6 +120,61 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertIn("response_length/mean", metrics)
 
 
+    def test_compute_data_metrics_includes_r2e_action_distribution(self):
+        """Test R2E action-distribution and warning counters when present."""
+        self.batch.non_tensor_batch = {
+            "traj_uid": np.array(["traj-a", "traj-b"], dtype=object),
+            "episode_rewards": np.array([0.0, -0.2], dtype=np.float32),
+            "episode_lengths": np.array([2.0, 3.0], dtype=np.float32),
+            "tool_callings": np.array([2.0, 3.0], dtype=np.float32),
+            "r2e_tool_file_editor_view_count": np.array([2.0, 1.0], dtype=np.float32),
+            "r2e_tool_file_editor_str_replace_count": np.array([0.0, 1.0], dtype=np.float32),
+            "r2e_tool_search_count": np.array([1.0, 0.0], dtype=np.float32),
+            "r2e_tool_execute_bash_count": np.array([0.0, 1.0], dtype=np.float32),
+            "r2e_tool_finish_count": np.array([0.0, 0.0], dtype=np.float32),
+            "r2e_parse_warning_count": np.array([1.0, 0.0], dtype=np.float32),
+            "r2e_multi_tool_warning_count": np.array([1.0, 0.0], dtype=np.float32),
+            "r2e_repeated_view_count": np.array([1.0, 0.0], dtype=np.float32),
+            "r2e_shaping_reward_sum": np.array([-0.2, 0.05], dtype=np.float32),
+        }
+
+        metrics = compute_data_metrics(self.batch, use_critic=True)
+
+        self.assertAlmostEqual(metrics["episode/r2e_tool/file_editor_view/mean"], 1.5)
+        self.assertAlmostEqual(metrics["episode/r2e_tool/search/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/r2e_tool/file_editor_str_replace/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/r2e/parse_warning_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/r2e/repeated_view_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/r2e/shaping_reward_sum/mean"], -0.075)
+
+
+    def test_compute_data_metrics_includes_code_repair_action_distribution(self):
+        """Test CodeRepair action-distribution, order violations, and scores when present."""
+        self.batch.non_tensor_batch = {
+            "traj_uid": np.array(["traj-a", "traj-b"], dtype=object),
+            "episode_rewards": np.array([0.0, 1.0], dtype=np.float32),
+            "episode_lengths": np.array([4.0, 5.0], dtype=np.float32),
+            "tool_callings": np.array([4.0, 5.0], dtype=np.float32),
+            "code_repair_tool_view_problem_count": np.array([1.0, 1.0], dtype=np.float32),
+            "code_repair_tool_replace_solution_count": np.array([2.0, 1.0], dtype=np.float32),
+            "code_repair_tool_run_tests_count": np.array([1.0, 2.0], dtype=np.float32),
+            "code_repair_tool_finish_count": np.array([0.0, 1.0], dtype=np.float32),
+            "code_repair_invalid_action_count": np.array([1.0, 0.0], dtype=np.float32),
+            "code_repair_policy_violation_count": np.array([1.0, 0.0], dtype=np.float32),
+            "code_repair_visible_score": np.array([0.5, 1.0], dtype=np.float32),
+            "code_repair_full_score": np.array([0.0, 1.0], dtype=np.float32),
+        }
+
+        metrics = compute_data_metrics(self.batch, use_critic=True)
+
+        self.assertAlmostEqual(metrics["episode/code_repair/replace_solution/mean"], 1.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/run_tests/mean"], 1.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/finish/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/policy_violation_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/visible_score/mean"], 0.75)
+        self.assertAlmostEqual(metrics["episode/code_repair/full_score/max"], 1.0)
+
+
 class TestComputeTimingMetrics(unittest.TestCase):
     """Tests for the compute_timing_metrics function."""
     

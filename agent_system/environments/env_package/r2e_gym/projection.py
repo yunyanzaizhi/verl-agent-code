@@ -52,6 +52,33 @@ _TOOL_SCHEMAS = {
     },
 }
 
+# Regex for fallback: matches <tag_name>value</tag_name> where tag_name is NOT "function" or "parameter..."
+_PLAIN_TAG_RE = re.compile(
+    r"<(\w+)>(.*?)</\1>", re.DOTALL
+)
+
+
+def _fallback_merge_plain_tags(block: str, function_name: str, existing_params: Dict[str, str]) -> Dict[str, str]:
+    """Parse plain XML tags like <command>view</command> as parameters.
+
+    Merges into existing_params without overwriting already-parsed <parameter=key> values.
+    Only accepts tag names that are valid parameters for the given tool.
+    """
+    schema = _TOOL_SCHEMAS.get(function_name)
+    if schema is None:
+        return existing_params
+    allowed = schema["allowed"]
+    merged = dict(existing_params)
+    for match in _PLAIN_TAG_RE.finditer(block):
+        tag_name = match.group(1).strip()
+        tag_value = match.group(2).strip()
+        # Skip tags that are already parsed via <parameter=key> or not valid param names
+        if tag_name in merged:
+            continue
+        if tag_name in allowed:
+            merged[tag_name] = tag_value
+    return merged
+
 
 def _invalid_action(error: str, raw_action: str = "") -> Dict[str, Any]:
     action = {
@@ -128,6 +155,13 @@ def parse_r2e_gym_action(text: str) -> ParsedR2EAction:
     if not action.function_name:
         error = "Action format error: missing function name."
         return ParsedR2EAction(_invalid_action(error, str(text)), False, error)
+
+    # --- FALLBACK: merge any plain-XML tags the model used instead of <parameter=key> ---
+    existing = getattr(action, "parameters", {}) or {}
+    merged = _fallback_merge_plain_tags(block, action.function_name, existing)
+    if merged != existing:
+        action.parameters = merged
+
     schema_error = _schema_error(action)
     if schema_error:
         return ParsedR2EAction(_invalid_action(schema_error, str(text)), False, schema_error)

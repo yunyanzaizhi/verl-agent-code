@@ -19,12 +19,56 @@ def shell_default(script: str, name: str) -> int:
 def test_r2e_grpo_v100_defaults_use_v100_safe_response_window():
     script = script_text("run_r2e_gym_grpo_v100.sh")
 
+    assert shell_default(script, "MAX_PROMPT_LENGTH") == 6144
     assert shell_default(script, "MAX_RESPONSE_LENGTH") == 1536
     assert shell_default(script, "ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU") == 8192
     assert shell_default(script, "ROLLOUT_MAX_MODEL_LEN") == 8192
     assert shell_default(script, "ROLLOUT_MAX_NUM_BATCHED_TOKENS") == 8192
+    assert (
+        shell_default(script, "MAX_PROMPT_LENGTH")
+        + shell_default(script, "MAX_RESPONSE_LENGTH")
+        <= shell_default(script, "ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU")
+    )
+    assert 'data.max_prompt_length="${MAX_PROMPT_LENGTH}"' in script
+    assert "ACTOR_USE_DYNAMIC_BSZ=${ACTOR_USE_DYNAMIC_BSZ:-True}" in script
+    assert 'actor_rollout_ref.actor.use_dynamic_bsz="${ACTOR_USE_DYNAMIC_BSZ}"' in script
     assert "ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.45}" in script
     assert "actor_rollout_ref.actor.fsdp_config.param_offload=True" in script
+    assert "FILTER_GROUPS_ENABLE=${FILTER_GROUPS_ENABLE:-True}" in script
+    assert shell_default(script, "FILTER_GROUPS_MAX_NUM_GEN_BATCHES") == 4
+    assert 'algorithm.filter_groups.enable="${FILTER_GROUPS_ENABLE}"' in script
+    assert 'algorithm.filter_groups.max_num_gen_batches="${FILTER_GROUPS_MAX_NUM_GEN_BATCHES}"' in script
+
+
+def test_r2e_grpo_v100_1gpu_defaults_keep_core_params_but_smaller_batch():
+    script = script_text("run_r2e_gym_grpo_v100_1gpu.sh")
+
+    assert shell_default(script, "N_GPUS") == 1
+    assert shell_default(script, "TP_SIZE") == 1
+    assert shell_default(script, "TRAIN_BATCH_SIZE") == 1
+    assert shell_default(script, "GROUP_SIZE") == 2
+    assert shell_default(script, "MAX_STEPS") == 15
+    assert shell_default(script, "HISTORY_LENGTH") == 30
+    assert shell_default(script, "MAX_PROMPT_LENGTH") == 4096
+    assert shell_default(script, "MAX_RESPONSE_LENGTH") == 1024
+    assert shell_default(script, "ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU") == 5120
+    assert shell_default(script, "ACTOR_PPO_MINI_BATCH_SIZE") == 1
+    assert shell_default(script, "ROLLOUT_MAX_MODEL_LEN") == 5120
+    assert shell_default(script, "ROLLOUT_MAX_NUM_BATCHED_TOKENS") == 5120
+    assert (
+        shell_default(script, "MAX_PROMPT_LENGTH")
+        + shell_default(script, "MAX_RESPONSE_LENGTH")
+        <= shell_default(script, "ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU")
+    )
+    assert "ACTOR_USE_DYNAMIC_BSZ=${ACTOR_USE_DYNAMIC_BSZ:-True}" in script
+    assert "ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.35}" in script
+    assert 'actor_rollout_ref.actor.use_dynamic_bsz="${ACTOR_USE_DYNAMIC_BSZ}"' in script
+    assert 'actor_rollout_ref.rollout.tensor_model_parallel_size="${TP_SIZE}"' in script
+    assert 'env.rollout.n="${GROUP_SIZE}"' in script
+    assert "FILTER_GROUPS_ENABLE=${FILTER_GROUPS_ENABLE:-True}" in script
+    assert shell_default(script, "FILTER_GROUPS_MAX_NUM_GEN_BATCHES") == 4
+    assert 'algorithm.filter_groups.enable="${FILTER_GROUPS_ENABLE}"' in script
+    assert 'algorithm.filter_groups.max_num_gen_batches="${FILTER_GROUPS_MAX_NUM_GEN_BATCHES}"' in script
 
 
 def test_r2e_lora_smoke_uses_same_response_window_knobs():

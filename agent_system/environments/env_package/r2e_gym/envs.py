@@ -22,6 +22,7 @@ DEFAULT_R2E_COMMAND_FILES = [
 STR_REPLACE_AFTER_EXPLORE_REWARD = 0.05
 REPEATED_FAILED_ACTION_PENALTY = 0.02
 REPEATED_FAILED_ACTION_MAX_PENALTY = 0.10
+REPEATED_NO_PROGRESS_VIEW_PENALTY = 0.20
 
 
 class R2EGymVectorEnv(gym.Env):
@@ -65,6 +66,7 @@ class R2EGymVectorEnv(gym.Env):
         self.steps: List[int] = []
         self.last_successful_explore: List[bool] = []
         self.failed_action_counts: List[Dict[Any, int]] = []
+        self.view_action_counts: List[Dict[Any, int]] = []
 
     def _repo_env_cls(self):
         if self.repo_env_cls is not None:
@@ -130,6 +132,7 @@ class R2EGymVectorEnv(gym.Env):
         self.steps = [0] * len(self.current_tasks)
         self.last_successful_explore = [False] * len(self.current_tasks)
         self.failed_action_counts = [{} for _ in self.current_tasks]
+        self.view_action_counts = [{} for _ in self.current_tasks]
         observations: List[str] = []
         infos: List[Dict[str, Any]] = []
         repo_env_cls = self._repo_env_cls()
@@ -201,6 +204,28 @@ class R2EGymVectorEnv(gym.Env):
     def _is_str_replace_action(cls, action: Any) -> bool:
         return cls._is_file_editor_command(action, "str_replace")
 
+    @classmethod
+    def _view_signature(cls, action: Any):
+        if not cls._is_file_editor_command(action, "view"):
+            return None
+        params = getattr(action, "parameters", {}) or {}
+        return (
+            "file_editor",
+            "view",
+            str(params.get("path", "")),
+            str(params.get("view_range", "")),
+            str(params.get("concise", "")),
+        )
+
+    def _record_view_action(self, idx: int, action: Any) -> int:
+        signature = self._view_signature(action)
+        if signature is None:
+            return 0
+        counts = self.view_action_counts[idx]
+        repeat_count = counts.get(signature, 0) + 1
+        counts[signature] = repeat_count
+        return repeat_count
+
     @staticmethod
     def _looks_like_failed_observation(observation: str, info: Dict[str, Any]) -> bool:
         if info.get("is_action_valid") is False:
@@ -252,6 +277,11 @@ class R2EGymVectorEnv(gym.Env):
             shaping_reward, shaping_events, repeat_count = self._record_failed_action(idx, action)
             self.last_successful_explore[idx] = False
         else:
+            view_repeat_count = self._record_view_action(idx, action)
+            if view_repeat_count > 1:
+                shaping_reward -= REPEATED_NO_PROGRESS_VIEW_PENALTY
+                shaping_events.append("repeated_no_progress_view")
+                info["r2e_repeated_view_repeat_count"] = int(view_repeat_count)
             if self.last_successful_explore[idx] and self._is_str_replace_action(action):
                 shaping_reward += STR_REPLACE_AFTER_EXPLORE_REWARD
                 shaping_events.append("str_replace_after_successful_explore")

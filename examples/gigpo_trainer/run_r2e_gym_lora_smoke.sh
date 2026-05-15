@@ -37,8 +37,14 @@ export PYTHONPATH="/home/caiting/verl-agent:${R2E_GYM_ROOT}/src:${PYTHONPATH:-}"
 export HF_HOME=${HF_HOME:-/home/caiting/.cache/huggingface}
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
+R2E_LOG_RETENTION_COUNT=${R2E_LOG_RETENTION_COUNT:-5}
 
 STDOUT_TARGET=$(readlink -f /proc/$$/fd/1 2>/dev/null || true)
+if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
+    R2E_LOG_DIR=$(dirname "${STDOUT_TARGET}")
+else
+    R2E_LOG_DIR="/home/caiting/verl-agent/logs/r2e_gym"
+fi
 if [[ -z "${R2E_RUN_LOG_NAME:-}" ]]; then
     if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
         R2E_RUN_LOG_NAME=$(basename "${STDOUT_TARGET}")
@@ -48,15 +54,21 @@ if [[ -z "${R2E_RUN_LOG_NAME:-}" ]]; then
 fi
 if [[ -z "${R2E_STEP_LOG_DIR:-}" ]]; then
     if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
-        R2E_STEP_LOG_DIR="$(dirname "${STDOUT_TARGET}")/episode_steps/${R2E_RUN_LOG_NAME}"
+        R2E_STEP_LOG_DIR="${R2E_LOG_DIR}/episode_steps/${R2E_RUN_LOG_NAME}"
     else
-        R2E_STEP_LOG_DIR="/home/caiting/verl-agent/logs/r2e_gym/episode_steps/${R2E_RUN_LOG_NAME}"
+        R2E_STEP_LOG_DIR="${R2E_LOG_DIR}/episode_steps/${R2E_RUN_LOG_NAME}"
     fi
 fi
+mkdir -p "${R2E_LOG_DIR}"
 mkdir -p "${R2E_STEP_LOG_DIR}"
 export R2E_RUN_LOG_NAME
 export R2E_STEP_LOG_DIR
 export R2E_STEP_LOG_ENABLED=${R2E_STEP_LOG_ENABLED:-1}
+"${PYTHON_BIN}" -m agent_system.multi_turn_rollout.log_retention \
+    --log-dir "${R2E_LOG_DIR}" \
+    --episode-steps-dir "${R2E_LOG_DIR}/episode_steps" \
+    --current-run-log-name "${R2E_RUN_LOG_NAME}" \
+    --keep "${R2E_LOG_RETENTION_COUNT}"
 echo "R2E_STEP_LOG_DIR=${R2E_STEP_LOG_DIR}"
 
 if [[ ! -f "${TRAIN_DATA_FILE}" || ! -f "${VAL_DATA_FILE}" ]]; then

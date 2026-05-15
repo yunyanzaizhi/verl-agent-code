@@ -5,32 +5,31 @@ set -x
 cd /home/caiting/verl-agent
 
 PYTHON_BIN=${PYTHON_BIN:-/home/caiting/verl-agent-exp-copy-from-lab-server-20260505/.venv/bin/python}
-R2E_GYM_ROOT=${R2E_GYM_ROOT:-/home/caiting/R2E-Gym}
 MODEL_PATH=${MODEL_PATH:-/home/caiting/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-3B-Instruct/snapshots/488639f1ff808d1d3d0ba301aef8c11461451ec5}
 CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-/home/caiting/verl-agent/checkpoints}
 
 ENGINE=${ENGINE:-vllm}
-N_GPUS=${N_GPUS:-2}
-TP_SIZE=${TP_SIZE:-${N_GPUS}}
-TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-2}
-VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-3}
+N_GPUS=${N_GPUS:-1}
+TP_SIZE=${TP_SIZE:-1}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-1}
+VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-1}
 GROUP_SIZE=${GROUP_SIZE:-2}
 NUM_CPUS_PER_ENV_WORKER=${NUM_CPUS_PER_ENV_WORKER:-0.25}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 USE_REMOVE_PADDING=${USE_REMOVE_PADDING:-True}
 AMP_DTYPE=${AMP_DTYPE:-float16}
 
-MAX_STEPS=${MAX_STEPS:-30}
-HISTORY_LENGTH=${HISTORY_LENGTH:-100}
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-6144}
-MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-1536}
-ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU=${ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU:-8192}
+MAX_STEPS=${MAX_STEPS:-64}
+HISTORY_LENGTH=${HISTORY_LENGTH:-5}
+MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
+MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-1024}
+ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU=${ACTOR_PPO_MAX_TOKEN_LEN_PER_GPU:-5120}
 ACTOR_USE_DYNAMIC_BSZ=${ACTOR_USE_DYNAMIC_BSZ:-True}
-ACTOR_PPO_MINI_BATCH_SIZE=${ACTOR_PPO_MINI_BATCH_SIZE:-2}
-ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-8192}
-ROLLOUT_MAX_MODEL_LEN=${ROLLOUT_MAX_MODEL_LEN:-8192}
-ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-1024}
-ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.45}
+ACTOR_PPO_MINI_BATCH_SIZE=${ACTOR_PPO_MINI_BATCH_SIZE:-1}
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-5120}
+ROLLOUT_MAX_MODEL_LEN=${ROLLOUT_MAX_MODEL_LEN:-5120}
+ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-64}
+ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}
 ROLLOUT_FREE_CACHE_ENGINE=${ROLLOUT_FREE_CACHE_ENGINE:-True}
 ROLLOUT_ENABLE_PREFIX_CACHING=${ROLLOUT_ENABLE_PREFIX_CACHING:-False}
 TRAIN_TEMPERATURE=${TRAIN_TEMPERATURE:-0.35}
@@ -40,18 +39,18 @@ VAL_TOP_P=${VAL_TOP_P:-0.9}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-1}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 PREPARE_DATA=${PREPARE_DATA:-False}
-FILTER_GROUPS_ENABLE=${FILTER_GROUPS_ENABLE:-True}
-FILTER_GROUPS_MAX_NUM_GEN_BATCHES=${FILTER_GROUPS_MAX_NUM_GEN_BATCHES:-4}
+FILTER_GROUPS_ENABLE=${FILTER_GROUPS_ENABLE:-False}
+FILTER_GROUPS_MAX_NUM_GEN_BATCHES=${FILTER_GROUPS_MAX_NUM_GEN_BATCHES:-1}
 
-R2E_TRAIN_DATASET=${R2E_TRAIN_DATASET:-R2E-Gym/R2E-Gym-Subset}
-R2E_TRAIN_SPLIT=${R2E_TRAIN_SPLIT:-train}
-R2E_VAL_DATASET=${R2E_VAL_DATASET:-R2E-Gym/R2E-Gym-Lite}
-R2E_VAL_SPLIT=${R2E_VAL_SPLIT:-dev_10pr_v1}
+CODE_REPAIR_TRAIN_PATH=${CODE_REPAIR_TRAIN_PATH:-/home/caiting/verl-agent/data/LeetCodeDataset/LeetCodeDataset-train.jsonl}
+CODE_REPAIR_VAL_PATH=${CODE_REPAIR_VAL_PATH:-/home/caiting/verl-agent/data/LeetCodeDataset/LeetCodeDataset-test.jsonl}
+VISIBLE_TEST_COUNT=${VISIBLE_TEST_COUNT:-6}
+EXECUTION_TIMEOUT=${EXECUTION_TIMEOUT:-8}
 
 TRAIN_DATA_FILE=${TRAIN_DATA_FILE:-/home/caiting/data/verl-agent/text/train.parquet}
 VAL_DATA_FILE=${VAL_DATA_FILE:-/home/caiting/data/verl-agent/text/test.parquet}
 
-export PYTHONPATH="/home/caiting/verl-agent:${R2E_GYM_ROOT}/src:${PYTHONPATH:-}"
+export PYTHONPATH="/home/caiting/verl-agent:${PYTHONPATH:-}"
 export HF_HOME=${HF_HOME:-/home/caiting/.cache/huggingface}
 export HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-1}
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
@@ -59,39 +58,35 @@ export TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export VLLM_USE_V1=${VLLM_USE_V1:-0}
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-true}
-R2E_LOG_RETENTION_COUNT=${R2E_LOG_RETENTION_COUNT:-5}
 
+CODE_REPAIR_LOG_RETENTION_COUNT=${CODE_REPAIR_LOG_RETENTION_COUNT:-5}
 STDOUT_TARGET=$(readlink -f /proc/$$/fd/1 2>/dev/null || true)
 if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
-    R2E_LOG_DIR=$(dirname "${STDOUT_TARGET}")
+    CODE_REPAIR_LOG_DIR=$(dirname "${STDOUT_TARGET}")
 else
-    R2E_LOG_DIR="/home/caiting/verl-agent/logs/r2e_gym"
+    CODE_REPAIR_LOG_DIR="/home/caiting/verl-agent/logs/code_repair"
 fi
-if [[ -z "${R2E_RUN_LOG_NAME:-}" ]]; then
+if [[ -z "${CODE_REPAIR_RUN_LOG_NAME:-}" ]]; then
     if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
-        R2E_RUN_LOG_NAME=$(basename "${STDOUT_TARGET}")
+        CODE_REPAIR_RUN_LOG_NAME=$(basename "${STDOUT_TARGET}")
     else
-        R2E_RUN_LOG_NAME="r2e_gym_grpo_v100_manual_$(date +%Y%m%d_%H%M%S).log"
+        CODE_REPAIR_RUN_LOG_NAME="code_repair_lora_long_first_step_v100_$(date +%Y%m%d_%H%M%S).log"
     fi
 fi
-if [[ -z "${R2E_STEP_LOG_DIR:-}" ]]; then
-    if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
-        R2E_STEP_LOG_DIR="${R2E_LOG_DIR}/episode_steps/${R2E_RUN_LOG_NAME}"
-    else
-        R2E_STEP_LOG_DIR="${R2E_LOG_DIR}/episode_steps/${R2E_RUN_LOG_NAME}"
-    fi
+if [[ -z "${CODE_REPAIR_STEP_LOG_DIR:-}" ]]; then
+    CODE_REPAIR_STEP_LOG_DIR="${CODE_REPAIR_LOG_DIR}/episode_steps/${CODE_REPAIR_RUN_LOG_NAME}"
 fi
-mkdir -p "${R2E_LOG_DIR}"
-mkdir -p "${R2E_STEP_LOG_DIR}"
-export R2E_RUN_LOG_NAME
-export R2E_STEP_LOG_DIR
-export R2E_STEP_LOG_ENABLED=${R2E_STEP_LOG_ENABLED:-1}
+mkdir -p "${CODE_REPAIR_LOG_DIR}"
+mkdir -p "${CODE_REPAIR_STEP_LOG_DIR}"
+export CODE_REPAIR_RUN_LOG_NAME
+export CODE_REPAIR_STEP_LOG_DIR
+export CODE_REPAIR_STEP_LOG_ENABLED=${CODE_REPAIR_STEP_LOG_ENABLED:-1}
 "${PYTHON_BIN}" -m agent_system.multi_turn_rollout.log_retention \
-    --log-dir "${R2E_LOG_DIR}" \
-    --episode-steps-dir "${R2E_LOG_DIR}/episode_steps" \
-    --current-run-log-name "${R2E_RUN_LOG_NAME}" \
-    --keep "${R2E_LOG_RETENTION_COUNT}"
-echo "R2E_STEP_LOG_DIR=${R2E_STEP_LOG_DIR}"
+    --log-dir "${CODE_REPAIR_LOG_DIR}" \
+    --episode-steps-dir "${CODE_REPAIR_LOG_DIR}/episode_steps" \
+    --current-run-log-name "${CODE_REPAIR_RUN_LOG_NAME}" \
+    --keep "${CODE_REPAIR_LOG_RETENTION_COUNT}"
+echo "CODE_REPAIR_STEP_LOG_DIR=${CODE_REPAIR_STEP_LOG_DIR}"
 
 if [[ "${PREPARE_DATA}" == "True" || "${PREPARE_DATA}" == "true" || ! -f "${TRAIN_DATA_FILE}" || ! -f "${VAL_DATA_FILE}" ]]; then
     "${PYTHON_BIN}" -m examples.data_preprocess.prepare \
@@ -167,27 +162,25 @@ fi
     algorithm.gamma=1.0 \
     algorithm.filter_groups.enable="${FILTER_GROUPS_ENABLE}" \
     algorithm.filter_groups.max_num_gen_batches="${FILTER_GROUPS_MAX_NUM_GEN_BATCHES}" \
-    env.env_name=r2e_gym \
+    env.env_name=code_repair \
     env.seed=0 \
     env.history_length="${HISTORY_LENGTH}" \
     env.max_steps="${MAX_STEPS}" \
     env.rollout.n="${GROUP_SIZE}" \
     env.resources_per_worker.num_cpus="${NUM_CPUS_PER_ENV_WORKER}" \
-    env.r2e_gym.train_dataset="${R2E_TRAIN_DATASET}" \
-    env.r2e_gym.train_split="${R2E_TRAIN_SPLIT}" \
-    env.r2e_gym.val_dataset="${R2E_VAL_DATASET}" \
-    env.r2e_gym.val_split="${R2E_VAL_SPLIT}" \
-    env.r2e_gym.backend=docker \
-    env.r2e_gym.step_timeout=60 \
-    env.r2e_gym.reward_timeout=300 \
-    env.r2e_gym.auto_submit_on_max_steps=True \
-    env.r2e_gym.step_log_enabled=True \
-    env.r2e_gym.step_log_dir="${R2E_STEP_LOG_DIR}" \
-    env.r2e_gym.run_log_name="${R2E_RUN_LOG_NAME}" \
+    env.code_repair.train_path="${CODE_REPAIR_TRAIN_PATH}" \
+    env.code_repair.val_path="${CODE_REPAIR_VAL_PATH}" \
+    env.code_repair.visible_test_count="${VISIBLE_TEST_COUNT}" \
+    env.code_repair.execution_timeout="${EXECUTION_TIMEOUT}" \
+    env.code_repair.allow_full_tests_in_loop=False \
+    env.code_repair.auto_finish_on_max_steps=True \
+    env.code_repair.step_log_enabled=True \
+    env.code_repair.step_log_dir="${CODE_REPAIR_STEP_LOG_DIR}" \
+    env.code_repair.run_log_name="${CODE_REPAIR_RUN_LOG_NAME}" \
     trainer.critic_warmup=0 \
     trainer.logger="['console']" \
-    trainer.project_name='verl_agent_r2e_gym' \
-    trainer.experiment_name='qwen2p5_coder_3b_grpo_v100' \
+    trainer.project_name='verl_agent_code_repair' \
+    trainer.experiment_name='qwen2p5_coder_3b_lora_long_first_step_v100' \
     trainer.n_gpus_per_node="${N_GPUS}" \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
@@ -196,5 +189,5 @@ fi
     trainer.total_epochs="${TOTAL_EPOCHS}" \
     trainer.val_before_train=False \
     trainer.val_only=False \
-    trainer.default_local_dir="${CHECKPOINTS_DIR}/verl_agent_r2e_gym/qwen2p5_coder_3b_grpo_v100" \
+    trainer.default_local_dir="${CHECKPOINTS_DIR}/verl_agent_code_repair/qwen2p5_coder_3b_lora_long_first_step_v100" \
     "$@"

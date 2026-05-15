@@ -340,3 +340,25 @@ env:
       - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/search.py
       - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/r2egym/execute_bash.py
       - /home/caiting/R2E-Gym/src/r2egym/agenthub/tools/finish.py
+  code_repair:
+    train_path: data/LeetCodeDataset/LeetCodeDataset-train.jsonl
+    val_path: data/LeetCodeDataset/LeetCodeDataset-test.jsonl
+    train_split: train
+    val_split: test
+    dataset_name: LeetCodeDataset
+    max_train_tasks: null
+    max_val_tasks: null
+    visible_test_count: 6
+    execution_timeout: 8
+    max_code_chars: 20000
+    allow_full_tests_in_loop: False
+    auto_finish_on_max_steps: True
+    invalid_action_penalty: 0.05
+    syntax_error_penalty: 0.05
+    repeated_no_progress_penalty: 0.02
+    test_improvement_reward: 0.5
+    terminal_success_reward: 1.0
+    terminal_score_reward: 1.0
+    step_log_enabled: False
+    step_log_dir: null
+    run_log_name: null

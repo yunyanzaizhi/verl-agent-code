@@ -76,6 +76,47 @@ def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
     )
 
 
+R2E_EPISODE_METRIC_NAMES = {
+    "r2e_tool_file_editor_view_count": "episode/r2e_tool/file_editor_view",
+    "r2e_tool_file_editor_str_replace_count": "episode/r2e_tool/file_editor_str_replace",
+    "r2e_tool_file_editor_create_count": "episode/r2e_tool/file_editor_create",
+    "r2e_tool_file_editor_insert_count": "episode/r2e_tool/file_editor_insert",
+    "r2e_tool_file_editor_undo_edit_count": "episode/r2e_tool/file_editor_undo_edit",
+    "r2e_tool_search_count": "episode/r2e_tool/search",
+    "r2e_tool_execute_bash_count": "episode/r2e_tool/execute_bash",
+    "r2e_tool_finish_count": "episode/r2e_tool/finish",
+    "r2e_invalid_action_count": "episode/r2e/invalid_action_count",
+    "r2e_parse_warning_count": "episode/r2e/parse_warning_count",
+    "r2e_multi_tool_warning_count": "episode/r2e/multi_tool_warning_count",
+    "r2e_repeated_view_count": "episode/r2e/repeated_view_count",
+    "r2e_shaping_reward_sum": "episode/r2e/shaping_reward_sum",
+}
+
+CODE_REPAIR_EPISODE_METRIC_NAMES = {
+    "code_repair_tool_view_problem_count": "episode/code_repair/view_problem",
+    "code_repair_tool_replace_solution_count": "episode/code_repair/replace_solution",
+    "code_repair_tool_run_tests_count": "episode/code_repair/run_tests",
+    "code_repair_tool_finish_count": "episode/code_repair/finish",
+    "code_repair_invalid_action_count": "episode/code_repair/invalid_action_count",
+    "code_repair_policy_violation_count": "episode/code_repair/policy_violation_count",
+    "code_repair_visible_score": "episode/code_repair/visible_score",
+    "code_repair_full_score": "episode/code_repair/full_score",
+}
+
+
+def _compute_optional_r2e_episode_metrics(batch: DataProto, unique_idx: np.ndarray) -> Dict[str, Any]:
+    metrics = {}
+    non_tensor_batch = getattr(batch, "non_tensor_batch", {}) or {}
+    for source_key, metric_prefix in {**R2E_EPISODE_METRIC_NAMES, **CODE_REPAIR_EPISODE_METRIC_NAMES}.items():
+        if source_key not in non_tensor_batch:
+            continue
+        values = np.asarray(non_tensor_batch[source_key])[unique_idx].astype(np.float32)
+        metrics[f"{metric_prefix}/mean"] = float(np.mean(values))
+        metrics[f"{metric_prefix}/max"] = float(np.max(values))
+        metrics[f"{metric_prefix}/min"] = float(np.min(values))
+    return metrics
+
+
 def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str, Any]:
     """
     Computes various metrics from a batch of data for PPO training.
@@ -184,6 +225,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         #     batch.non_tensor_batch["tool_callings"][unique_idx].max().item(),
         # "episode/tool_call_count/min":
         #     batch.non_tensor_batch["tool_callings"][unique_idx].min().item(),
+        **_compute_optional_r2e_episode_metrics(batch, unique_idx),
         **({f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}),
     }
     return metrics

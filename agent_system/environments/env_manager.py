@@ -701,6 +701,112 @@ class R2EGymEnvironmentManager(EnvironmentManagerBase):
         return postprocess_text_obs
 
 
+class CodeRepairEnvironmentManager(EnvironmentManagerBase):
+    def __init__(self, envs, projection_f, config):
+        self.memory = SimpleMemory()
+        self.tasks = []
+        self.task_ids = []
+        super().__init__(envs, projection_f, config)
+
+    def reset(self, kwargs):
+        text_obs, infos = self.envs.reset(kwargs=kwargs)
+        self.memory.reset(batch_size=len(text_obs))
+        self.tasks = list(getattr(self.envs, "current_tasks", [None] * len(text_obs)))
+        if len(self.tasks) != len(text_obs):
+            self.tasks = [None] * len(text_obs)
+        self.task_ids = [str(info.get("task_id", idx)) for idx, info in enumerate(infos)]
+        observations = {
+            "text": self.build_text_obs(text_obs, init=True),
+            "image": None,
+            "anchor": np.array(self.task_ids, dtype=object),
+        }
+        return observations, infos
+
+    @staticmethod
+    def _serialize_action(action):
+        if hasattr(action, "tool_name"):
+            result = {
+                "tool_name": str(getattr(action, "tool_name", "")),
+                "parameters": dict(getattr(action, "parameters", {}) or {}),
+                "valid": bool(getattr(action, "valid", True)),
+            }
+            if "code" in result["parameters"]:
+                result["parameters"]["code"] = f"<{len(getattr(action, 'parameters', {}).get('code', ''))} chars>"
+            error = getattr(action, "error", "")
+            if error:
+                result["error"] = str(error)
+            parse_warning = getattr(action, "parse_warning", "")
+            if parse_warning:
+                result["parse_warning"] = str(parse_warning)
+            return result
+        if isinstance(action, dict):
+            return {
+                "tool_name": str(action.get("tool_name", "")),
+                "parameters": dict(action.get("parameters", {}) or {}),
+                "valid": bool(action.get("valid", False)),
+                "error": str(action.get("error", "")),
+            }
+        return {"tool_name": "", "parameters": {}, "valid": False, "raw": str(action)}
+
+    def step(self, text_actions: List[str]):
+        actions, projection_valids = self.projection_f(text_actions)
+        next_obs, rewards, dones, infos = self.envs.step(actions)
+        from agent_system.environments.env_package.code_repair.projection import format_code_repair_action_for_history
+
+        action_history = [format_code_repair_action_for_history(action) for action in actions]
+        parse_warnings = [str(getattr(action, "parse_warning", "") or "") for action in actions]
+        next_obs_for_prompt = []
+        for idx, observation in enumerate(next_obs):
+            warning = parse_warnings[idx] if idx < len(parse_warnings) else ""
+            if warning:
+                next_obs_for_prompt.append(f"{observation}\n\nAction parse warning: {warning}")
+            else:
+                next_obs_for_prompt.append(observation)
+        self.memory.store({"text_obs": next_obs_for_prompt, "action": action_history})
+        for idx, info in enumerate(infos):
+            env_valid = bool(info.get("is_action_valid", True))
+            info["is_action_valid"] = bool(projection_valids[idx] and env_valid)
+            info["raw_model_output"] = str(text_actions[idx]) if idx < len(text_actions) else ""
+            info["code_repair_action"] = self._serialize_action(actions[idx] if idx < len(actions) else None)
+            info["code_repair_raw_observation"] = str(next_obs[idx]) if idx < len(next_obs) else ""
+        next_observations = {
+            "text": self.build_text_obs(next_obs_for_prompt),
+            "image": None,
+            "anchor": np.array(self.task_ids, dtype=object),
+        }
+        return next_observations, to_numpy(rewards), to_numpy(dones), infos
+
+    def build_text_obs(self, text_obs: List[str], init: bool = False) -> List[str]:
+        from agent_system.environments.env_package.code_repair.prompts import (
+            build_code_repair_followup_prompt,
+            build_code_repair_initial_prompt,
+            format_code_repair_history_turn,
+        )
+
+        postprocess_text_obs = []
+        history_length = int(getattr(self.config.env, "history_length", 0))
+        for idx, observation in enumerate(text_obs):
+            task = self.tasks[idx] if idx < len(self.tasks) else None
+            if init or history_length <= 0:
+                postprocess_text_obs.append(build_code_repair_initial_prompt(task, observation))
+                continue
+            records = self.memory[idx][-history_length:]
+            start_step = len(self.memory[idx]) - len(records) + 1
+            history = [
+                format_code_repair_history_turn(start_step + offset, record["action"], record["text_obs"])
+                for offset, record in enumerate(records)
+            ]
+            postprocess_text_obs.append(
+                build_code_repair_followup_prompt(
+                    task=task,
+                    current_observation=observation,
+                    history=history,
+                    step_count=len(self.memory[idx]),
+                )
+            )
+        return postprocess_text_obs
+
+
 def make_envs(config):
     """
     Create enviroments 
@@ -711,7 +817,15 @@ def make_envs(config):
     group_n = config.env.rollout.n if config.env.rollout.n > 0 else 1
     resources_per_worker = OmegaConf.to_container(config.env.resources_per_worker, resolve=True)
 
-    if "r2e_gym" in config.env.env_name.lower() or config.env.env_name.lower() in ["r2e", "r2egym"]:
+    if "code_repair" in config.env.env_name.lower() or config.env.env_name.lower() in ["leetcode_repair", "leetcode_code_repair"]:
+        from agent_system.environments.env_package.code_repair import build_code_repair_envs, code_repair_projection
+        _envs = build_code_repair_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
+        _val_envs = build_code_repair_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)
+
+        envs = CodeRepairEnvironmentManager(_envs, code_repair_projection, config)
+        val_envs = CodeRepairEnvironmentManager(_val_envs, code_repair_projection, config)
+        return envs, val_envs
+    elif "r2e_gym" in config.env.env_name.lower() or config.env.env_name.lower() in ["r2e", "r2egym"]:
         from agent_system.environments.env_package.r2e_gym import build_r2e_gym_envs, r2e_gym_projection
         _envs = build_r2e_gym_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
         _val_envs = build_r2e_gym_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)

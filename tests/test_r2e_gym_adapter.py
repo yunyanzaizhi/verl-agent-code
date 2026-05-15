@@ -118,7 +118,7 @@ def test_r2e_prompt_documents_exact_argparse_aligned_xml_schema():
     assert "search_term (string, required)" in R2E_TOOL_SPEC
     assert "Currently allowed value: [submit]" in R2E_TOOL_SPEC
 
-    assert "Each response must include both reasoning (as natural text) and function call" in R2E_ACTION_RULES
+    assert "Each response must include both reasoning (as natural text) and exactly one function call" in R2E_ACTION_RULES
     assert "Your response must be exactly one XML tool call and nothing else" not in R2E_ACTION_RULES
     assert "<parameter=name>value</parameter>" not in R2E_ACTION_RULES
 
@@ -130,18 +130,17 @@ def test_r2e_initial_prompt_uses_r2e_code_repair_workflow():
     task = normalize_r2e_task_record(sample_r2e_record(), "dataset", "train", 0)
     prompt = build_r2e_initial_prompt(task, "Fix the parser when input is split.")
 
-    assert "I have uploaded a python code repository in the /testbed directory." in prompt
+    assert "You are a software engineering agent inside a Docker environment at /testbed." in prompt
+    assert "Your task: fix the github issue below by editing source files." in prompt
     assert "<github_issue>" in prompt
-    assert "1. First, explore the codebase" in prompt
-    assert "2. Assess whether you can reproduce the issue" in prompt
-    assert "3. Analyze the root cause" in prompt
-    assert "4. Implement your solution" in prompt
-    assert "5. Verify your solution" in prompt
-    assert "6. Run unit tests" in prompt
-    assert "7. Test edge cases" in prompt
-    assert "8. Refine if necessary" in prompt
-    assert "9. Submit your solution" in prompt
-    assert "DO NOT MODIFY any of the existing unit tests" in prompt
+    assert "1. EXPLORE" in prompt
+    assert "2. REPRODUCE" in prompt
+    assert "3. ANALYZE" in prompt
+    assert "4. IMPLEMENT" in prompt
+    assert "5. VERIFY" in prompt
+    assert "6. TEST" in prompt
+    assert "7. SUBMIT" in prompt
+    assert "Do NOT submit until you have actually used file_editor to edit files and verified the fix." in prompt
 
 
 def test_r2e_followup_prompt_keeps_original_issue_context_with_truncation():
@@ -163,7 +162,7 @@ def test_r2e_followup_prompt_keeps_original_issue_context_with_truncation():
         step_count=1,
     )
 
-    assert "Original Github issue:" in prompt
+    assert "Original issue:" in prompt
     assert "<github_issue>" in prompt
     assert "Fix the parser sentinel-start" in prompt
     assert "sentinel-tail" not in prompt
@@ -356,6 +355,41 @@ def test_r2e_vector_env_escalates_repeated_failed_action_penalty():
     env.close()
 
 
+def test_r2e_vector_env_penalizes_repeated_view_without_invalidating_action():
+    from agent_system.environments.env_package.r2e_gym.envs import R2EGymVectorEnv
+    from agent_system.environments.env_package.r2e_gym.projection import r2e_gym_projection
+    from agent_system.environments.env_package.r2e_gym.tasks import normalize_r2e_task_record
+
+    FakeRepoEnv.created = []
+    task = normalize_r2e_task_record(sample_r2e_record(), "dataset", "train", 0)
+    env = R2EGymVectorEnv(tasks=[task], env_num=1, group_n=1, repo_env_cls=FakeRepoEnv)
+    env.reset()
+
+    view_call = """
+    <function=file_editor>
+      <parameter=command>view</parameter>
+      <parameter=path>/testbed/demo/parser.py</parameter>
+    </function>
+    """
+    parsed, _ = r2e_gym_projection([view_call])
+    _obs, rewards, _dones, infos = env.step(parsed)
+    assert rewards == [0.0]
+    assert infos[0]["is_action_valid"] is True
+    assert infos[0]["r2e_shaping_reward"] == 0.0
+
+    parsed, _ = r2e_gym_projection([view_call])
+    _obs, rewards, dones, infos = env.step(parsed)
+
+    assert rewards == [-0.2]
+    assert dones == [False]
+    assert infos[0]["is_action_valid"] is True
+    assert infos[0]["r2e_shaping_events"] == ["repeated_no_progress_view"]
+    assert infos[0]["r2e_repeated_view_repeat_count"] == 2
+    assert FakeRepoEnv.created[0].actions[0].function_name == "file_editor"
+    assert FakeRepoEnv.created[0].actions[1].function_name == "file_editor"
+    env.close()
+
+
 def test_r2e_environment_manager_formats_history_and_success():
     from omegaconf import OmegaConf
 
@@ -375,7 +409,7 @@ def test_r2e_environment_manager_formats_history_and_success():
     cfg = OmegaConf.create({"env": {"history_length": 2}})
     manager = R2EGymEnvironmentManager(FakeVectorEnv(), r2e_gym_projection, cfg)
     obs, infos = manager.reset(kwargs=None)
-    assert "repository-level software engineering agent" in obs["text"][0]
+    assert "software engineering agent inside a Docker environment at /testbed" in obs["text"][0]
     assert "Initial issue" in obs["text"][0]
     assert obs["anchor"].tolist() == ["task-1"]
 
