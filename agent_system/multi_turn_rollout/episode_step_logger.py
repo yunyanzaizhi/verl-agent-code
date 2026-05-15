@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent_system.multi_turn_rollout.log_retention import DEFAULT_MAX_RUN_LOGS, prune_r2e_gym_logs
+
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._=-]+")
 
@@ -118,15 +120,29 @@ def _filtered_env_info(info: Any) -> Dict[str, Any]:
     return {key: value for key, value in info.items() if key not in hidden}
 
 
+def _environment_label(record: Dict[str, Any]) -> str:
+    env = record.get("env", {}) or {}
+    env_name = str(env.get("name") or "").strip()
+    if env_name:
+        return env_name.replace("-", "_").upper()
+
+    actor = record.get("actor", {}) or {}
+    parsed_action = actor.get("parsed_action") if isinstance(actor, dict) else None
+    if isinstance(parsed_action, dict) and "tool_name" in parsed_action:
+        return "CODE_REPAIR"
+    return "R2E"
+
+
 def render_step_log(record: Dict[str, Any]) -> str:
     task = record.get("task", {}) or {}
     model_output = record.get("model_output", {}) or {}
     actor = record.get("actor", {}) or {}
     env = record.get("env", {}) or {}
 
+    header = f"{_environment_label(record)} EPISODE STEP"
     lines = [
         "=" * 80,
-        "R2E EPISODE STEP",
+        header,
         "=" * 80,
         f"train_step: {record.get('train_step')}",
         f"episode: {record.get('episode')}",
@@ -154,6 +170,7 @@ def render_step_log(record: Dict[str, Any]) -> str:
             "info": _filtered_env_info(env.get("info", {})),
         },
     )
+    _append_block(lines, "PROTOCOL", env.get("protocol"))
     lines.append("")
     return "\n".join(lines)
 
@@ -164,32 +181,58 @@ class EpisodeStepLogger:
         self.root_dir = Path(root_dir).expanduser() if root_dir else None
         self.run_log_name = _safe_filename_component(run_log_name)
 
+        if self.enabled and self.root_dir is not None and self.root_dir.parent.name == "episode_steps":
+            prune_r2e_gym_logs(
+                log_dir=self.root_dir.parent.parent,
+                episode_steps_dir=self.root_dir.parent,
+                current_run_log_name=self.run_log_name,
+                keep=DEFAULT_MAX_RUN_LOGS,
+            )
+
     @classmethod
     def from_config(cls, config: Any) -> "EpisodeStepLogger":
+        env_name = str(_cfg_get(config, "env.env_name", "") or "").lower()
+        if env_name in {"code_repair", "leetcode_repair", "leetcode_code_repair"} or "code_repair" in env_name:
+            prefix = "env.code_repair"
+            enabled_env = "CODE_REPAIR_STEP_LOG_ENABLED"
+            root_env = "CODE_REPAIR_STEP_LOG_DIR"
+            name_env = "CODE_REPAIR_RUN_LOG_NAME"
+            default_log_root = "code_repair"
+        else:
+            prefix = "env.r2e_gym"
+            enabled_env = "R2E_STEP_LOG_ENABLED"
+            root_env = "R2E_STEP_LOG_DIR"
+            name_env = "R2E_RUN_LOG_NAME"
+            default_log_root = "r2e_gym"
         enabled = _to_bool(
-            _cfg_get(config, "env.r2e_gym.step_log_enabled", os.environ.get("R2E_STEP_LOG_ENABLED")),
+            _cfg_get(config, f"{prefix}.step_log_enabled", os.environ.get(enabled_env)),
             default=False,
         )
-        root_dir = _cfg_get(config, "env.r2e_gym.step_log_dir", os.environ.get("R2E_STEP_LOG_DIR"))
-        run_log_name = _cfg_get(config, "env.r2e_gym.run_log_name", os.environ.get("R2E_RUN_LOG_NAME", "run.log"))
+        root_dir = _cfg_get(config, f"{prefix}.step_log_dir", os.environ.get(root_env))
+        run_log_name = _cfg_get(config, f"{prefix}.run_log_name", os.environ.get(name_env, "run.log"))
         if enabled and not root_dir:
-            root_dir = Path("logs") / "r2e_gym" / "episode_steps" / _safe_filename_component(run_log_name)
+            root_dir = Path("logs") / default_log_root / "episode_steps" / _safe_filename_component(run_log_name)
         return cls(root_dir=root_dir, run_log_name=run_log_name, enabled=enabled)
 
+    def step_directory(self, train_step: int, episode: int) -> Path:
+        return Path(f"train_step_{int(train_step):06d}") / f"episode_{int(episode):06d}"
+
     def step_filename(self, train_step: int, episode: int, step: int) -> str:
-        return (
-            f"{self.run_log_name}"
-            f"-train_step_{int(train_step):06d}"
-            f"-episode_{int(episode):06d}"
-            f"-step_{int(step):06d}.log"
+        return f"step_{int(step):06d}.log"
+
+    def step_path(self, train_step: int, episode: int, step: int) -> Path:
+        return self.step_directory(train_step=train_step, episode=episode) / self.step_filename(
+            train_step=train_step,
+            episode=episode,
+            step=step,
         )
 
     def write_step(self, train_step: int, episode: int, step: int, payload: Dict[str, Any]) -> Optional[Path]:
         if not self.enabled or self.root_dir is None:
             return None
 
-        self.root_dir.mkdir(parents=True, exist_ok=True)
-        path = self.root_dir / self.step_filename(train_step=train_step, episode=episode, step=step)
+        path = self.root_dir / self.step_path(train_step=train_step, episode=episode, step=step)
+        path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "train_step": int(train_step),
             "episode": int(episode),

@@ -28,6 +28,37 @@ from typing import List, Dict
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 
 class TrajectoryCollector:
+    R2E_STEP_METRIC_KEYS = (
+        "r2e_tool_file_editor_view_count",
+        "r2e_tool_file_editor_str_replace_count",
+        "r2e_tool_file_editor_create_count",
+        "r2e_tool_file_editor_insert_count",
+        "r2e_tool_file_editor_undo_edit_count",
+        "r2e_tool_search_count",
+        "r2e_tool_execute_bash_count",
+        "r2e_tool_finish_count",
+        "r2e_invalid_action_count",
+        "r2e_parse_warning_count",
+        "r2e_multi_tool_warning_count",
+        "r2e_repeated_view_count",
+        "r2e_shaping_reward_sum",
+    )
+    CODE_REPAIR_SUM_METRIC_KEYS = (
+        "code_repair_tool_view_problem_count",
+        "code_repair_tool_replace_solution_count",
+        "code_repair_tool_run_tests_count",
+        "code_repair_tool_finish_count",
+        "code_repair_invalid_action_step_count",
+        "code_repair_protocol_accept_count",
+        "code_repair_protocol_reject_count",
+        "code_repair_protocol_side_effect_applied_count",
+        "code_repair_step_policy_violation_count",
+    )
+    CODE_REPAIR_MAX_METRIC_KEYS = (
+        "code_repair_visible_score",
+        "code_repair_full_score",
+    )
+
     def __init__(self, config, tokenizer: PreTrainedTokenizer, processor=None):
         """
         Initialize the TrajectoryProcessor class.
@@ -71,6 +102,133 @@ class TrajectoryCollector:
             return None
         return _json_safe(value)
 
+    @staticmethod
+    def _r2e_action_name(info: Dict) -> str:
+        action = info.get("r2e_action") if isinstance(info, dict) else None
+        if not isinstance(action, dict):
+            return ""
+        function_name = str(action.get("function_name") or "")
+        if function_name != "file_editor":
+            return function_name
+        params = action.get("parameters") or {}
+        command = str(params.get("command") or "")
+        return f"file_editor_{command}" if command else "file_editor"
+
+    @staticmethod
+    def _code_repair_action_name(info: Dict) -> str:
+        action = info.get("code_repair_action") if isinstance(info, dict) else None
+        if not isinstance(action, dict):
+            return ""
+        if action.get("valid") is False:
+            return ""
+        return str(action.get("tool_name") or "")
+
+
+    @staticmethod
+    def _code_repair_protocol_payload(info: Dict):
+        if not isinstance(info, dict):
+            return None
+        protocol_keys = {
+            "state_before": info.get("code_repair_protocol_state_before"),
+            "allowed_actions": _json_safe(info.get("code_repair_protocol_allowed_actions")),
+            "expected_action": info.get("code_repair_protocol_expected_action"),
+            "actual_action": info.get("code_repair_protocol_actual_action"),
+            "accepted": info.get("code_repair_protocol_accepted"),
+            "violation_reason": info.get("code_repair_protocol_violation_reason"),
+            "side_effect_applied": info.get("code_repair_protocol_side_effect_applied"),
+            "state_after": info.get("code_repair_protocol_state_after"),
+            "current_code_hash_before": _json_safe(info.get("code_repair_current_code_hash_before")),
+            "current_code_hash_after": _json_safe(info.get("code_repair_current_code_hash_after")),
+        }
+        if all(value is None for value in protocol_keys.values()):
+            return None
+        return protocol_keys
+
+    @classmethod
+    def _r2e_step_metrics_from_infos(cls, infos: List[Dict], active_masks: np.ndarray, batch_size: int):
+        metrics = {key: np.zeros(batch_size, dtype=np.float32) for key in cls.R2E_STEP_METRIC_KEYS}
+        active = cls._values_to_list(active_masks, batch_size)
+        for idx, info in enumerate(infos[:batch_size]):
+            if not bool(active[idx]):
+                continue
+            info = info or {}
+            if not isinstance(info.get("r2e_action"), dict):
+                continue
+            action_name = cls._r2e_action_name(info)
+            tool_key = f"r2e_tool_{action_name}_count"
+            if tool_key in metrics:
+                metrics[tool_key][idx] = 1.0
+            elif not action_name:
+                metrics["r2e_invalid_action_count"][idx] = 1.0
+
+            action = info.get("r2e_action") if isinstance(info, dict) else None
+            warning = str((action or {}).get("parse_warning") or "") if isinstance(action, dict) else ""
+            if warning:
+                metrics["r2e_parse_warning_count"][idx] = 1.0
+                if "multiple XML tool calls" in warning:
+                    metrics["r2e_multi_tool_warning_count"][idx] = 1.0
+
+            events = info.get("r2e_shaping_events") or []
+            if "repeated_no_progress_view" in events:
+                metrics["r2e_repeated_view_count"][idx] = 1.0
+            try:
+                metrics["r2e_shaping_reward_sum"][idx] = float(info.get("r2e_shaping_reward", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return metrics
+
+    @classmethod
+    def _code_repair_step_metrics_from_infos(cls, infos: List[Dict], active_masks: np.ndarray, batch_size: int):
+        metric_keys = cls.CODE_REPAIR_SUM_METRIC_KEYS + cls.CODE_REPAIR_MAX_METRIC_KEYS
+        metrics = {key: np.zeros(batch_size, dtype=np.float32) for key in metric_keys}
+        active = cls._values_to_list(active_masks, batch_size)
+        for idx, info in enumerate(infos[:batch_size]):
+            if not bool(active[idx]):
+                continue
+            info = info or {}
+            action = info.get("code_repair_action") if isinstance(info, dict) else None
+            if not isinstance(action, dict):
+                continue
+
+            is_schema_invalid = action.get("valid") is False
+            is_env_invalid = info.get("is_action_valid") is False
+            protocol_accepted = info.get("code_repair_protocol_accepted")
+            protocol_rejected = protocol_accepted is False
+            counts_as_protocol_reject = protocol_rejected and is_schema_invalid is False
+            counts_as_invalid_action = is_schema_invalid or (is_env_invalid and not counts_as_protocol_reject)
+
+            if counts_as_invalid_action:
+                metrics["code_repair_invalid_action_step_count"][idx] = 1.0
+            elif counts_as_protocol_reject:
+                metrics["code_repair_protocol_reject_count"][idx] = 1.0
+            else:
+                action_name = cls._code_repair_action_name(info)
+                tool_key = f"code_repair_tool_{action_name}_count"
+                if tool_key in metrics:
+                    metrics[tool_key][idx] = 1.0
+                if protocol_accepted is True:
+                    metrics["code_repair_protocol_accept_count"][idx] = 1.0
+                if info.get("code_repair_protocol_side_effect_applied") is True:
+                    metrics["code_repair_protocol_side_effect_applied_count"][idx] = 1.0
+
+            metrics["code_repair_step_policy_violation_count"][idx] = cls._as_float(
+                info.get("code_repair_step_policy_violation_count", 0.0)
+            )
+            metrics["code_repair_visible_score"][idx] = cls._as_float(info.get("code_repair_visible_score", 0.0))
+            metrics["code_repair_full_score"][idx] = cls._as_float(info.get("code_repair_full_score", 0.0))
+        return metrics
+
+    @staticmethod
+    def _as_float(value) -> float:
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        if isinstance(value, np.ndarray):
+            value = value.item() if value.shape == () else value.reshape(-1)[0]
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _write_episode_step_logs(
         self,
         train_step: int,
@@ -94,12 +252,16 @@ class TrajectoryCollector:
             if not bool(active_list[episode_idx]):
                 continue
             info = infos[episode_idx] or {}
-            parsed_action = info.get("r2e_action")
+            parsed_action = info.get("r2e_action") or info.get("code_repair_action")
+            raw_observation = info.get("r2e_raw_observation", info.get("code_repair_raw_observation"))
             payload = {
                 "task": {
                     "task_id": info.get("task_id"),
                     "repo_name": info.get("repo_name"),
                     "docker_image": info.get("docker_image"),
+                    "dataset_task_id": info.get("dataset_task_id"),
+                    "question_id": info.get("question_id"),
+                    "difficulty": info.get("difficulty"),
                     "group_uid": _json_safe(uid_batch[episode_idx]) if episode_idx < len(uid_batch) else None,
                     "traj_uid": _json_safe(traj_uid[episode_idx]) if episode_idx < len(traj_uid) else None,
                 },
@@ -112,11 +274,17 @@ class TrajectoryCollector:
                     "is_action_valid": info.get("is_action_valid"),
                 },
                 "env": {
-                    "raw_observation": info.get("r2e_raw_observation"),
+                    "name": str(
+                        getattr(getattr(getattr(self, "config", None), "env", None), "env_name", "")
+                        or info.get("environment_name")
+                        or ("code_repair" if info.get("code_repair_action") else "r2e_gym")
+                    ),
+                    "raw_observation": raw_observation,
                     "observation": self._obs_item(next_obs, "text", episode_idx),
                     "anchor": self._obs_item(next_obs, "anchor", episode_idx),
                     "reward": rewards_list[episode_idx],
                     "done": dones_list[episode_idx],
+                    "protocol": self._code_repair_protocol_payload(info),
                     "info": info,
                 },
             }
@@ -347,6 +515,25 @@ class TrajectoryCollector:
         
         effective_batch = []
         for bs in range(batch_size):
+            episode_sum_metrics = {
+                key: sum(
+                    self._as_float(data.get(key, 0.0))
+                    for data in total_batch_list[bs]
+                    if data.get("active_masks")
+                )
+                for key in self.R2E_STEP_METRIC_KEYS + self.CODE_REPAIR_SUM_METRIC_KEYS
+            }
+            episode_max_metrics = {
+                key: max(
+                    [
+                        self._as_float(data.get(key, 0.0))
+                        for data in total_batch_list[bs]
+                        if data.get("active_masks")
+                    ]
+                    or [0.0]
+                )
+                for key in self.CODE_REPAIR_MAX_METRIC_KEYS
+            }
             # sum the rewards for each data in total_batch_list[bs]
             for data in total_batch_list[bs]:
                 assert traj_uid[bs] == data['traj_uid'], "data is not from the same trajectory"
@@ -357,6 +544,8 @@ class TrajectoryCollector:
                     data['episode_lengths'] = episode_lengths[bs]
                     # tool_callings
                     data['tool_callings'] = tool_callings[bs]
+                    for key, value in {**episode_sum_metrics, **episode_max_metrics}.items():
+                        data[key] = value
                     # success_rate
                     for key, value in success_rate.items():
                         data[key] = value
@@ -479,6 +668,13 @@ class TrajectoryCollector:
 
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
+            elif 'r2e_action' in infos[0] or 'code_repair_action' in infos[0]:
+                tool_callings[active_masks] += np.array(
+                    [1.0 if (self._r2e_action_name(info) or self._code_repair_action_name(info)) else 0.0 for info in infos],
+                    dtype=np.float32,
+                )[active_masks]
+            batch.non_tensor_batch.update(self._r2e_step_metrics_from_infos(infos, active_masks, batch_size))
+            batch.non_tensor_batch.update(self._code_repair_step_metrics_from_infos(infos, active_masks, batch_size))
             # Create reward tensor, only assign rewards for active environments
             # episode_rewards += torch_to_numpy(rewards) * torch_to_numpy(active_masks)
             episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
