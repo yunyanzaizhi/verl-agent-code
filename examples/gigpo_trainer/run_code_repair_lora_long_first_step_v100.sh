@@ -2,7 +2,9 @@
 set -euo pipefail
 set -x
 
-cd /home/caiting/verl-agent
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
+cd "${REPO_ROOT}"
 
 PYTHON_BIN=${PYTHON_BIN:-/home/caiting/verl-agent-exp-copy-from-lab-server-20260505/.venv/bin/python}
 MODEL_PATH=${MODEL_PATH:-/home/caiting/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-3B-Instruct/snapshots/488639f1ff808d1d3d0ba301aef8c11461451ec5}
@@ -50,7 +52,7 @@ EXECUTION_TIMEOUT=${EXECUTION_TIMEOUT:-8}
 TRAIN_DATA_FILE=${TRAIN_DATA_FILE:-/home/caiting/data/verl-agent/text/train.parquet}
 VAL_DATA_FILE=${VAL_DATA_FILE:-/home/caiting/data/verl-agent/text/test.parquet}
 
-export PYTHONPATH="/home/caiting/verl-agent:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export HF_HOME=${HF_HOME:-/home/caiting/.cache/huggingface}
 export HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-1}
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
@@ -61,13 +63,13 @@ export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-true}
 
 CODE_REPAIR_LOG_RETENTION_COUNT=${CODE_REPAIR_LOG_RETENTION_COUNT:-5}
 STDOUT_TARGET=$(readlink -f /proc/$$/fd/1 2>/dev/null || true)
-if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
+if [[ -n "${STDOUT_TARGET}" && -f "${STDOUT_TARGET}" ]]; then
     CODE_REPAIR_LOG_DIR=$(dirname "${STDOUT_TARGET}")
 else
-    CODE_REPAIR_LOG_DIR="/home/caiting/verl-agent/logs/code_repair"
+    CODE_REPAIR_LOG_DIR="${REPO_ROOT}/logs/code_repair"
 fi
 if [[ -z "${CODE_REPAIR_RUN_LOG_NAME:-}" ]]; then
-    if [[ -n "${STDOUT_TARGET}" && "${STDOUT_TARGET}" != /dev/* ]]; then
+    if [[ -n "${STDOUT_TARGET}" && -f "${STDOUT_TARGET}" ]]; then
         CODE_REPAIR_RUN_LOG_NAME=$(basename "${STDOUT_TARGET}")
     else
         CODE_REPAIR_RUN_LOG_NAME="code_repair_lora_long_first_step_v100_$(date +%Y%m%d_%H%M%S).log"
@@ -90,13 +92,13 @@ echo "CODE_REPAIR_STEP_LOG_DIR=${CODE_REPAIR_STEP_LOG_DIR}"
 
 if [[ "${PREPARE_DATA}" == "True" || "${PREPARE_DATA}" == "true" || ! -f "${TRAIN_DATA_FILE}" || ! -f "${VAL_DATA_FILE}" ]]; then
     "${PYTHON_BIN}" -m examples.data_preprocess.prepare \
-        --mode 'text' \
+        --mode text \
         --train_data_size "${TRAIN_BATCH_SIZE}" \
         --val_data_size "${VAL_BATCH_SIZE}"
 fi
 
 "$PYTHON_BIN" -m recipe.hgpo.main_hgpo \
-    algorithm.adv_estimator='grpo' \
+    algorithm.adv_estimator=grpo \
     data.train_files="${TRAIN_DATA_FILE}" \
     data.val_files="${VAL_DATA_FILE}" \
     data.train_batch_size="${TRAIN_BATCH_SIZE}" \
@@ -104,7 +106,7 @@ fi
     data.max_prompt_length="${MAX_PROMPT_LENGTH}" \
     data.max_response_length="${MAX_RESPONSE_LENGTH}" \
     data.filter_overlong_prompts=True \
-    data.truncation='left' \
+    data.truncation=left \
     data.return_raw_chat=True \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
     actor_rollout_ref.model.lora_rank=32 \
@@ -168,19 +170,19 @@ fi
     env.max_steps="${MAX_STEPS}" \
     env.rollout.n="${GROUP_SIZE}" \
     env.resources_per_worker.num_cpus="${NUM_CPUS_PER_ENV_WORKER}" \
-    env.code_repair.train_path="${CODE_REPAIR_TRAIN_PATH}" \
-    env.code_repair.val_path="${CODE_REPAIR_VAL_PATH}" \
-    env.code_repair.visible_test_count="${VISIBLE_TEST_COUNT}" \
-    env.code_repair.execution_timeout="${EXECUTION_TIMEOUT}" \
-    env.code_repair.allow_full_tests_in_loop=False \
-    env.code_repair.auto_finish_on_max_steps=True \
-    env.code_repair.step_log_enabled=True \
-    env.code_repair.step_log_dir="${CODE_REPAIR_STEP_LOG_DIR}" \
-    env.code_repair.run_log_name="${CODE_REPAIR_RUN_LOG_NAME}" \
+    ++env.code_repair.train_path="${CODE_REPAIR_TRAIN_PATH}" \
+    ++env.code_repair.val_path="${CODE_REPAIR_VAL_PATH}" \
+    ++env.code_repair.visible_test_count="${VISIBLE_TEST_COUNT}" \
+    ++env.code_repair.execution_timeout="${EXECUTION_TIMEOUT}" \
+    ++env.code_repair.allow_full_tests_in_loop=False \
+    ++env.code_repair.auto_finish_on_max_steps=True \
+    ++env.code_repair.step_log_enabled=True \
+    ++env.code_repair.step_log_dir="${CODE_REPAIR_STEP_LOG_DIR}" \
+    ++env.code_repair.run_log_name="${CODE_REPAIR_RUN_LOG_NAME}" \
     trainer.critic_warmup=0 \
-    trainer.logger="['console']" \
-    trainer.project_name='verl_agent_code_repair' \
-    trainer.experiment_name='qwen2p5_coder_3b_lora_long_first_step_v100' \
+    trainer.logger="[console]" \
+    trainer.project_name=verl_agent_code_repair \
+    trainer.experiment_name=qwen2p5_coder_3b_lora_long_first_step_v100 \
     trainer.n_gpus_per_node="${N_GPUS}" \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

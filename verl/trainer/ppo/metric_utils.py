@@ -99,6 +99,11 @@ CODE_REPAIR_EPISODE_METRIC_NAMES = {
     "code_repair_tool_finish_count": "episode/code_repair/finish",
     "code_repair_invalid_action_count": "episode/code_repair/invalid_action_count",
     "code_repair_policy_violation_count": "episode/code_repair/policy_violation_count",
+    "code_repair_invalid_action_step_count": "episode/code_repair/invalid_action_step_count",
+    "code_repair_protocol_accept_count": "episode/code_repair/protocol_accept_count",
+    "code_repair_protocol_reject_count": "episode/code_repair/protocol_reject_count",
+    "code_repair_protocol_side_effect_applied_count": "episode/code_repair/protocol_side_effect_applied_count",
+    "code_repair_step_policy_violation_count": "episode/code_repair/step_policy_violation_count",
     "code_repair_visible_score": "episode/code_repair/visible_score",
     "code_repair_full_score": "episode/code_repair/full_score",
 }
@@ -112,6 +117,21 @@ def _compute_optional_r2e_episode_metrics(batch: DataProto, unique_idx: np.ndarr
             continue
         values = np.asarray(non_tensor_batch[source_key])[unique_idx].astype(np.float32)
         metrics[f"{metric_prefix}/mean"] = float(np.mean(values))
+        metrics[f"{metric_prefix}/max"] = float(np.max(values))
+        metrics[f"{metric_prefix}/min"] = float(np.min(values))
+
+    compatibility_aliases = {
+        "code_repair_invalid_action_step_count": "episode/code_repair/invalid_action_count",
+        "code_repair_step_policy_violation_count": "episode/code_repair/policy_violation_count",
+    }
+    for source_key, metric_prefix in compatibility_aliases.items():
+        if source_key not in non_tensor_batch:
+            continue
+        mean_key = f"{metric_prefix}/mean"
+        if mean_key in metrics:
+            continue
+        values = np.asarray(non_tensor_batch[source_key])[unique_idx].astype(np.float32)
+        metrics[mean_key] = float(np.mean(values))
         metrics[f"{metric_prefix}/max"] = float(np.max(values))
         metrics[f"{metric_prefix}/min"] = float(np.min(values))
     return metrics

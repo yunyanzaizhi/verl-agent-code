@@ -120,15 +120,29 @@ def _filtered_env_info(info: Any) -> Dict[str, Any]:
     return {key: value for key, value in info.items() if key not in hidden}
 
 
+def _environment_label(record: Dict[str, Any]) -> str:
+    env = record.get("env", {}) or {}
+    env_name = str(env.get("name") or "").strip()
+    if env_name:
+        return env_name.replace("-", "_").upper()
+
+    actor = record.get("actor", {}) or {}
+    parsed_action = actor.get("parsed_action") if isinstance(actor, dict) else None
+    if isinstance(parsed_action, dict) and "tool_name" in parsed_action:
+        return "CODE_REPAIR"
+    return "R2E"
+
+
 def render_step_log(record: Dict[str, Any]) -> str:
     task = record.get("task", {}) or {}
     model_output = record.get("model_output", {}) or {}
     actor = record.get("actor", {}) or {}
     env = record.get("env", {}) or {}
 
+    header = f"{_environment_label(record)} EPISODE STEP"
     lines = [
         "=" * 80,
-        "R2E EPISODE STEP",
+        header,
         "=" * 80,
         f"train_step: {record.get('train_step')}",
         f"episode: {record.get('episode')}",
@@ -156,6 +170,7 @@ def render_step_log(record: Dict[str, Any]) -> str:
             "info": _filtered_env_info(env.get("info", {})),
         },
     )
+    _append_block(lines, "PROTOCOL", env.get("protocol"))
     lines.append("")
     return "\n".join(lines)
 
@@ -177,7 +192,7 @@ class EpisodeStepLogger:
     @classmethod
     def from_config(cls, config: Any) -> "EpisodeStepLogger":
         env_name = str(_cfg_get(config, "env.env_name", "") or "").lower()
-        if "code_repair" in env_name:
+        if env_name in {"code_repair", "leetcode_repair", "leetcode_code_repair"} or "code_repair" in env_name:
             prefix = "env.code_repair"
             enabled_env = "CODE_REPAIR_STEP_LOG_ENABLED"
             root_env = "CODE_REPAIR_STEP_LOG_DIR"

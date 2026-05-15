@@ -6,6 +6,16 @@ import numpy as np
 
 from .executor import TestRunResult, run_code_repair_tests
 from .projection import CodeRepairAction
+from .protocol import (
+    ProtocolSnapshot,
+    ProtocolState,
+    allowed_actions,
+    apply_action_transition,
+    apply_visible_test_result,
+    check_protocol_action,
+    expected_action,
+    initial_protocol_snapshot,
+)
 from .tasks import CodeRepairTask, load_code_repair_tasks_from_config, normalize_code_repair_record
 
 
@@ -47,13 +57,11 @@ class CodeRepairEpisodeState:
     no_progress_count: int = 0
     current_code_tested: bool = False
     visible_passed_current_code: bool = False
-    next_required_action: str = "view_problem"
-    viewed_problem: bool = False
-    requires_problem_view: bool = False
     order_correct_count: int = 0
     order_violation_streak: int = 0
     order_shaping_reward_sum: float = 0.0
     policy_violation_count: int = 0
+    protocol_snapshot: ProtocolSnapshot = field(default_factory=initial_protocol_snapshot)
     history: List[Dict[str, str]] = field(default_factory=list)
 
 
@@ -156,8 +164,28 @@ class CodeRepairVectorEnv(gym.Env):
             repeated.extend([task] * self.group_n)
         return repeated[: self.batch_size]
 
+    @staticmethod
+    def _snapshot_state_name(snapshot: ProtocolSnapshot) -> str:
+        return snapshot.state.value
+
+    @staticmethod
+    def _next_required_action(state: CodeRepairEpisodeState) -> str:
+        if state.done:
+            return "done"
+        return expected_action(state.protocol_snapshot)
+
+    @staticmethod
+    def _allowed_actions(state: CodeRepairEpisodeState) -> List[str]:
+        if state.done:
+            return []
+        return sorted(allowed_actions(state.protocol_snapshot))
+
     def _base_info(self, state: CodeRepairEpisodeState, is_action_valid: bool = True) -> Dict[str, Any]:
         task = state.task
+        current_hash = hash(state.current_code)
+        protocol_state = self._snapshot_state_name(state.protocol_snapshot)
+        expected = self._next_required_action(state)
+        allowed = self._allowed_actions(state)
         return {
             "task_id": task.task_id,
             "dataset_task_id": task.dataset_task_id,
@@ -171,7 +199,7 @@ class CodeRepairVectorEnv(gym.Env):
             "code_repair_invalid_action_count": int(state.invalid_action_count),
             "code_repair_visible_score": float(state.best_visible_score),
             "code_repair_full_score": float(state.best_full_score),
-            "code_repair_next_required_action": state.next_required_action,
+            "code_repair_next_required_action": expected,
             "code_repair_tested_current_code": bool(state.current_code_tested),
             "code_repair_visible_passed_current_code": bool(state.visible_passed_current_code),
             "code_repair_policy_violation_count": int(state.policy_violation_count),
@@ -181,6 +209,16 @@ class CodeRepairVectorEnv(gym.Env):
             "code_repair_order_violation_streak": int(state.order_violation_streak),
             "code_repair_order_shaping_reward_sum": float(state.order_shaping_reward_sum),
             "code_repair_required_action_match": False,
+            "code_repair_protocol_state_before": protocol_state,
+            "code_repair_protocol_state_after": protocol_state,
+            "code_repair_protocol_expected_action": expected,
+            "code_repair_protocol_allowed_actions": allowed,
+            "code_repair_protocol_actual_action": None,
+            "code_repair_protocol_accepted": None,
+            "code_repair_protocol_violation_reason": None,
+            "code_repair_protocol_side_effect_applied": False,
+            "code_repair_current_code_hash_before": current_hash,
+            "code_repair_current_code_hash_after": current_hash,
         }
 
     def reset(self, kwargs: Any = None) -> Tuple[List[str], List[Dict[str, Any]]]:
@@ -271,44 +309,26 @@ class CodeRepairVectorEnv(gym.Env):
             action_text = str(action)
         state.history.append({"action": action_text, "observation": observation})
 
-    @staticmethod
-    def _sync_next_required_action(state: CodeRepairEpisodeState) -> None:
-        if state.visible_passed_current_code:
-            state.next_required_action = "finish"
-        elif not state.viewed_problem or state.requires_problem_view:
-            state.next_required_action = "view_problem"
-        elif state.edit_count == 0:
-            state.next_required_action = "replace_solution"
-        elif not state.current_code_tested:
-            state.next_required_action = "run_tests"
-        else:
-            state.next_required_action = "replace_solution"
-
-    @staticmethod
-    def _append_next_required_action(state: CodeRepairEpisodeState, observation: str) -> str:
-        if state.done:
+    def _append_next_required_action(self, state: CodeRepairEpisodeState, observation: str) -> str:
+        next_required_action = self._next_required_action(state)
+        if next_required_action == "done":
             return observation
-        guidance = f"Next required action: {state.next_required_action}."
-        if state.next_required_action == "view_problem":
+        guidance = f"Next required action: {next_required_action}."
+        if next_required_action == "view_problem":
             guidance += "\nCall view_problem with section=all before editing again."
             guidance += "\nBefore choosing an action, check the immediately previous action in Recent repair history."
-        elif state.next_required_action == "run_tests":
+        elif next_required_action == "run_tests":
             guidance += "\nDo not call replace_solution again until visible tests have run."
             guidance += "\nBefore choosing an action, check the immediately previous action in Recent repair history."
-        elif state.next_required_action == "finish":
+        elif next_required_action == "finish":
             guidance += "\nVisible tests passed for the current code; finish now instead of editing again."
             guidance += "\nBefore choosing an action, check the immediately previous action in Recent repair history."
-        elif state.next_required_action == "replace_solution":
+        elif next_required_action == "replace_solution":
             guidance += "\nUse replace_solution with a complete class Solution implementation."
             guidance += "\nBefore choosing an action, check the immediately previous action in Recent repair history."
         return f"{observation}\n\n{guidance}"
 
-    def _record_order_violation(
-        self,
-        state: CodeRepairEpisodeState,
-        events: List[str],
-        event: str,
-    ) -> float:
+    def _record_order_violation(self, state: CodeRepairEpisodeState, events: List[str], event: str) -> float:
         state.policy_violation_count += 1
         events.append(event)
         state.order_violation_streak += 1
@@ -321,49 +341,31 @@ class CodeRepairVectorEnv(gym.Env):
         state.order_shaping_reward_sum -= penalty
         return -penalty
 
-    @staticmethod
-    def _order_violation_event(state: CodeRepairEpisodeState, action: CodeRepairAction) -> str:
-        expected = state.next_required_action
-        actual = action.tool_name
-        if expected == "view_problem":
-            if actual == "view_problem":
-                return "view_problem_without_all"
-            return "replace_before_required_view" if state.requires_problem_view else "action_before_initial_view"
-        if expected == "run_tests" and actual == "replace_solution":
-            return "replace_without_testing"
-        if expected == "finish":
-            return f"{actual}_after_visible_pass"
-        return f"{actual}_before_{expected}"
-
-    @staticmethod
-    def _is_required_action_match(state: CodeRepairEpisodeState, action: CodeRepairAction) -> bool:
-        if action.tool_name != state.next_required_action:
-            return False
-        if action.tool_name == "view_problem":
-            return action.parameters.get("section", "all") == "all"
-        if action.tool_name == "run_tests":
-            return action.parameters.get("suite", "visible") == "visible"
-        return True
-
-    def _record_order_outcome(
+    def _protocol_violation_event(
         self,
         state: CodeRepairEpisodeState,
-        action: CodeRepairAction,
-        events: List[str],
-    ) -> Tuple[float, int, bool]:
-        if self._is_required_action_match(state, action):
-            key = "view_after_failed_tests" if action.tool_name == "view_problem" and state.requires_problem_view else action.tool_name
-            reward = ORDER_CORRECT_REWARDS.get(key, 0.0)
-            reward += min(
-                state.order_correct_count * ORDER_CORRECT_STREAK_BONUS,
-                ORDER_CORRECT_STREAK_BONUS_CAP,
-            )
-            state.order_correct_count += 1
-            state.order_violation_streak = 0
-            state.order_shaping_reward_sum += reward
-            return reward, 0, True
-        event = self._order_violation_event(state, action)
-        return self._record_order_violation(state, events, event), 1, False
+        action_name: str,
+        violation_reason: Optional[str],
+    ) -> str:
+        if violation_reason == "action_before_initial_view" and action_name == "replace_solution" and state.test_count > 0:
+            return "replace_before_required_view"
+        return violation_reason or f"{action_name}_protocol_reject"
+
+    def _accepted_order_reward(
+        self,
+        state: CodeRepairEpisodeState,
+        action_name: str,
+        snapshot_before: ProtocolSnapshot,
+    ) -> float:
+        key = action_name
+        if action_name == "view_problem" and snapshot_before.state is ProtocolState.NEED_VIEW and state.test_count > 0:
+            key = "view_after_failed_tests"
+        reward = ORDER_CORRECT_REWARDS.get(key, 0.0)
+        reward += min(state.order_correct_count * ORDER_CORRECT_STREAK_BONUS, ORDER_CORRECT_STREAK_BONUS_CAP)
+        state.order_correct_count += 1
+        state.order_violation_streak = 0
+        state.order_shaping_reward_sum += reward
+        return reward
 
     def _run_tests(self, state: CodeRepairEpisodeState, suite: str) -> Tuple[str, float, TestRunResult]:
         result = run_code_repair_tests(state.task, state.current_code, suite=suite, timeout=self.execution_timeout)
@@ -377,10 +379,9 @@ class CodeRepairVectorEnv(gym.Env):
         if not result.passed and result.error:
             reward -= self.syntax_error_penalty if "SyntaxError" in result.error else 0.0
         state.current_code_tested = True
-        if suite == "visible":
+        if suite == "visible" or (suite == "full" and self.allow_full_tests_in_loop):
             state.visible_passed_current_code = bool(result.passed)
-            state.requires_problem_view = not bool(result.passed)
-        self._sync_next_required_action(state)
+            state.protocol_snapshot = apply_visible_test_result(state.protocol_snapshot, passed=bool(result.passed))
         observation = (
             f"{suite.title()} tests: {result.passed_count}/{result.total} passed "
             f"(score={result.score:.3f})."
@@ -395,7 +396,6 @@ class CodeRepairVectorEnv(gym.Env):
         state.best_full_score = max(state.best_full_score, float(result.score))
         state.won = bool(result.passed)
         state.done = True
-        state.next_required_action = "done"
         reward = result.score * self.terminal_score_reward
         if result.passed:
             reward += self.terminal_success_reward
@@ -410,13 +410,13 @@ class CodeRepairVectorEnv(gym.Env):
     def _maybe_auto_finish(self, state: CodeRepairEpisodeState, reward: float, done: bool, observation: str, info: Dict[str, Any]):
         if done or not self.auto_finish_on_max_steps or state.steps < self.max_steps:
             return observation, reward, done, info
-        if state.test_count == 0:
+        if not state.visible_passed_current_code:
             state.policy_violation_count += 1
             reward -= self.untested_max_step_penalty
             info["code_repair_step_policy_violation_count"] = int(
                 info.get("code_repair_step_policy_violation_count", 0)
             ) + 1
-            info.setdefault("code_repair_order_events", []).append("max_steps_without_tests")
+            info.setdefault("code_repair_order_events", []).append("max_steps_without_visible_test_gate")
         final_observation, final_reward, result = self._finish(state, reason="max_steps")
         info.update(
             {
@@ -434,6 +434,14 @@ class CodeRepairVectorEnv(gym.Env):
         action: Any,
         step_policy_violation_count: int,
         order_events: List[str],
+        protocol_state_before: ProtocolSnapshot,
+        protocol_state_after: ProtocolSnapshot,
+        protocol_actual_action: Optional[str],
+        protocol_accepted: Optional[bool],
+        protocol_violation_reason: Optional[str],
+        protocol_side_effect_applied: bool,
+        current_code_hash_before: int,
+        current_code_hash_after: int,
     ) -> None:
         info.setdefault("code_repair_action", self._serialize_action(action))
         info["code_repair_step"] = int(state.steps)
@@ -442,7 +450,7 @@ class CodeRepairVectorEnv(gym.Env):
         info["code_repair_invalid_action_count"] = int(state.invalid_action_count)
         info["code_repair_visible_score"] = float(state.best_visible_score)
         info["code_repair_full_score"] = float(state.best_full_score)
-        info["code_repair_next_required_action"] = state.next_required_action
+        info["code_repair_next_required_action"] = self._next_required_action(state)
         info["code_repair_tested_current_code"] = bool(state.current_code_tested)
         info["code_repair_visible_passed_current_code"] = bool(state.visible_passed_current_code)
         info["code_repair_policy_violation_count"] = int(state.policy_violation_count)
@@ -451,8 +459,44 @@ class CodeRepairVectorEnv(gym.Env):
         info["code_repair_order_correct_count"] = int(state.order_correct_count)
         info["code_repair_order_violation_streak"] = int(state.order_violation_streak)
         info["code_repair_order_shaping_reward_sum"] = float(state.order_shaping_reward_sum)
-        info["code_repair_required_action_match"] = bool(step_policy_violation_count == 0 and not order_events)
+        info["code_repair_required_action_match"] = bool(
+            protocol_accepted is True
+            and bool(info.get("is_action_valid", True))
+            and bool(protocol_side_effect_applied)
+            and step_policy_violation_count == 0
+            and not order_events
+        )
+        info["code_repair_protocol_state_before"] = self._snapshot_state_name(protocol_state_before)
+        info["code_repair_protocol_state_after"] = self._snapshot_state_name(protocol_state_after)
+        info["code_repair_protocol_expected_action"] = expected_action(protocol_state_before)
+        info["code_repair_protocol_allowed_actions"] = sorted(allowed_actions(protocol_state_before))
+        info["code_repair_protocol_actual_action"] = protocol_actual_action
+        info["code_repair_protocol_accepted"] = protocol_accepted
+        info["code_repair_protocol_violation_reason"] = protocol_violation_reason
+        info["code_repair_protocol_side_effect_applied"] = bool(protocol_side_effect_applied)
+        info["code_repair_current_code_hash_before"] = int(current_code_hash_before)
+        info["code_repair_current_code_hash_after"] = int(current_code_hash_after)
         info["won"] = bool(state.won)
+
+    def _protocol_rejection_observation(
+        self,
+        state: CodeRepairEpisodeState,
+        action: CodeRepairAction,
+        violation_reason: Optional[str],
+    ) -> str:
+        if action.tool_name == "finish":
+            if expected_action(state.protocol_snapshot) == "view_problem" and state.test_count > 0:
+                return "Finish rejected: refresh context with view_problem(section=all) before finish."
+            return "Finish rejected: run visible tests and pass them before finish."
+        if action.tool_name == "replace_solution":
+            if violation_reason == "replace_without_testing":
+                return "Please run visible tests before editing again.\nSolution replacement rejected by protocol."
+            if violation_reason == "action_before_initial_view" and state.test_count > 0:
+                return "Please refresh context with view_problem(section=all) before editing again.\nSolution replacement rejected by protocol."
+            return "Solution replacement rejected by protocol."
+        if action.tool_name == "view_problem" and violation_reason == "view_problem_requires_all":
+            return "view_problem rejected: section must be all."
+        return f"Protocol rejected action: {violation_reason or action.tool_name}."
 
     def step(self, actions: List[Any]):
         if len(actions) > len(self.states):
@@ -474,100 +518,137 @@ class CodeRepairVectorEnv(gym.Env):
             state.steps += 1
             order_events: List[str] = []
             step_policy_violation_count = 0
+            protocol_state_before = state.protocol_snapshot
+            protocol_state_after = state.protocol_snapshot
+            protocol_actual_action: Optional[str] = None
+            protocol_accepted: Optional[bool] = None
+            protocol_violation_reason: Optional[str] = None
+            protocol_side_effect_applied = False
+            current_code_hash_before = hash(state.current_code)
+
             if not isinstance(action, CodeRepairAction) or not action.valid:
                 observation, reward, done, info = self._invalid_step(state, action)
-            elif action.tool_name == "view_problem":
-                order_reward, step_policy_violation_count, _required_match = self._record_order_outcome(
-                    state, action, order_events
-                )
-                section = action.parameters.get("section", "all")
-                observation = self._view(state, section)
-                reward = order_reward
-                if section == "all":
-                    state.viewed_problem = True
-                    state.requires_problem_view = False
-                done = False
-                info = self._base_info(state)
-                self._sync_next_required_action(state)
-            elif action.tool_name == "replace_solution":
-                order_reward, step_policy_violation_count, _required_match = self._record_order_outcome(
-                    state, action, order_events
-                )
-                code = action.parameters.get("code", "")
-                info = self._base_info(state)
-                if len(code) > self.max_code_chars:
-                    observation = f"Replacement rejected: code is {len(code)} chars, limit is {self.max_code_chars}."
-                    reward = -self.invalid_action_penalty + order_reward
+            else:
+                protocol_actual_action = action.tool_name
+                section = action.parameters.get("section") if action.tool_name == "view_problem" else None
+                decision = check_protocol_action(protocol_state_before, action.tool_name, section=section)
+                protocol_accepted = bool(decision.accepted)
+                protocol_violation_reason = decision.violation_reason
+
+                if not decision.accepted:
+                    event = self._protocol_violation_event(state, action.tool_name, decision.violation_reason)
+                    reward = self._record_order_violation(state, order_events, event)
+                    if action.tool_name == "finish":
+                        reward -= self.premature_finish_penalty
+                    step_policy_violation_count = 1
+                    observation = self._protocol_rejection_observation(state, action, decision.violation_reason)
                     done = False
-                    info["is_action_valid"] = False
-                    info["error"] = observation
-                else:
-                    reward = order_reward
-                    prefix = ""
-                    if order_events:
-                        if "replace_without_testing" in order_events:
-                            prefix = "Please run visible tests before editing again.\n"
-                        elif "replace_before_required_view" in order_events:
-                            prefix = "Please refresh context with view_problem(section=all) before editing again.\n"
-                    else:
-                        prefix = ""
-                    state.current_code = code.rstrip() + "\n"
-                    state.edit_count += 1
-                    state.current_code_tested = False
-                    state.visible_passed_current_code = False
-                    state.requires_problem_view = False
-                    state.next_required_action = "run_tests"
-                    code_hash = hash(state.current_code)
-                    if code_hash == state.last_code_hash:
-                        state.no_progress_count += 1
-                        reward -= self.repeated_no_progress_penalty * state.no_progress_count
-                        observation = prefix + "Solution replacement accepted, but it is identical to the previous code."
-                    else:
-                        state.no_progress_count = 0
-                        observation = prefix + "Solution replacement accepted."
-                    state.last_code_hash = code_hash
-                done = False
-            elif action.tool_name == "run_tests":
-                order_reward, step_policy_violation_count, _required_match = self._record_order_outcome(
-                    state, action, order_events
-                )
-                suite = action.parameters.get("suite", "visible")
-                prefix = ""
-                if state.edit_count == 0:
-                    prefix += "No replacement has been submitted yet; tests are running against starter code.\n"
-                if suite == "full" and not self.allow_full_tests_in_loop:
-                    prefix += "Full tests are reserved for finish; running visible tests instead.\n"
-                    suite = "visible"
-                run_observation, reward, result = self._run_tests(state, suite)
-                reward += order_reward
-                observation = prefix + run_observation
-                done = False
-                info = self._base_info(state)
-                info["code_repair_test_result"] = result.__dict__
-            elif action.tool_name == "finish":
-                order_reward, step_policy_violation_count, _required_match = self._record_order_outcome(
-                    state, action, order_events
-                )
-                if not state.visible_passed_current_code:
-                    self._sync_next_required_action(state)
-                    observation = "Finish rejected: run visible tests and pass them before finish."
-                    reward = order_reward - self.premature_finish_penalty
+                    info = self._base_info(state, is_action_valid=False)
+                elif action.tool_name == "view_problem":
+                    reward = self._accepted_order_reward(state, action.tool_name, protocol_state_before)
+                    section = action.parameters.get("section", "all")
+                    observation = self._view(state, section)
+                    state.protocol_snapshot = apply_action_transition(protocol_state_before, action.tool_name, section=section)
+                    protocol_state_after = state.protocol_snapshot
+                    protocol_side_effect_applied = True
                     done = False
                     info = self._base_info(state)
-                else:
+                elif action.tool_name == "replace_solution":
+                    code = action.parameters.get("code", "")
+                    info = self._base_info(state)
+                    if len(code) > self.max_code_chars:
+                        observation = f"Replacement rejected: code is {len(code)} chars, limit is {self.max_code_chars}."
+                        reward = -self.invalid_action_penalty
+                        done = False
+                        info["is_action_valid"] = False
+                        info["error"] = observation
+                    else:
+                        reward = self._accepted_order_reward(state, action.tool_name, protocol_state_before)
+                        state.current_code = code.rstrip() + "\n"
+                        state.edit_count += 1
+                        state.current_code_tested = False
+                        state.visible_passed_current_code = False
+                        state.protocol_snapshot = apply_action_transition(protocol_state_before, action.tool_name)
+                        code_hash = hash(state.current_code)
+                        if code_hash == state.last_code_hash:
+                            state.no_progress_count += 1
+                            reward -= self.repeated_no_progress_penalty * state.no_progress_count
+                            observation = "Solution replacement accepted, but it is identical to the previous code."
+                        else:
+                            state.no_progress_count = 0
+                            observation = "Solution replacement accepted."
+                        state.last_code_hash = code_hash
+                        protocol_state_after = state.protocol_snapshot
+                        protocol_side_effect_applied = True
+                        done = False
+                elif action.tool_name == "run_tests":
+                    reward = self._accepted_order_reward(state, action.tool_name, protocol_state_before)
+                    suite = action.parameters.get("suite", "visible")
+                    prefix = ""
+                    if state.edit_count == 0:
+                        prefix += "No replacement has been submitted yet; tests are running against starter code.\n"
+                    if suite == "full" and not self.allow_full_tests_in_loop:
+                        prefix += "Full tests are reserved for finish; running visible tests instead.\n"
+                        suite = "visible"
+                    run_observation, run_reward, result = self._run_tests(state, suite)
+                    reward += run_reward
+                    observation = prefix + run_observation
+                    protocol_state_after = state.protocol_snapshot
+                    protocol_side_effect_applied = True
+                    done = False
+                    info = self._base_info(state)
+                    info["code_repair_test_result"] = result.__dict__
+                elif action.tool_name == "finish":
                     observation, terminal_reward, result = self._finish(state, reason="finish")
-                    reward = terminal_reward + order_reward
+                    reward = terminal_reward + self._accepted_order_reward(state, action.tool_name, protocol_state_before)
+                    protocol_state_after = state.protocol_snapshot
+                    protocol_side_effect_applied = True
                     done = True
                     info = self._base_info(state)
                     info["code_repair_final_result"] = result.__dict__
-            else:
-                observation, reward, done, info = self._invalid_step(state, action)
+                else:
+                    observation, reward, done, info = self._invalid_step(state, action)
 
-            observation = self._append_next_required_action(state, observation)
-            self._refresh_info(info, state, action, step_policy_violation_count, order_events)
-            observation, reward, done, info = self._maybe_auto_finish(state, float(reward), bool(done), observation, info)
+            current_code_hash_after = hash(state.current_code)
+            protocol_state_after = state.protocol_snapshot
             state.done = bool(done)
-            self._refresh_info(info, state, action, info["code_repair_step_policy_violation_count"], info["code_repair_order_events"])
+            self._refresh_info(
+                info,
+                state,
+                action,
+                step_policy_violation_count,
+                order_events,
+                protocol_state_before,
+                protocol_state_after,
+                protocol_actual_action,
+                protocol_accepted,
+                protocol_violation_reason,
+                protocol_side_effect_applied,
+                current_code_hash_before,
+                current_code_hash_after,
+            )
+            if info.get("is_action_valid", True):
+                observation, reward, done, info = self._maybe_auto_finish(state, float(reward), bool(done), observation, info)
+            else:
+                reward = float(reward)
+                done = bool(done)
+            state.done = bool(done)
+            self._refresh_info(
+                info,
+                state,
+                action,
+                info["code_repair_step_policy_violation_count"],
+                info["code_repair_order_events"],
+                protocol_state_before,
+                state.protocol_snapshot,
+                protocol_actual_action,
+                protocol_accepted,
+                protocol_violation_reason,
+                protocol_side_effect_applied,
+                current_code_hash_before,
+                hash(state.current_code),
+            )
+            observation = self._append_next_required_action(state, observation)
             state.last_observation = observation
             self._record_history(state, action, observation)
             observations.append(observation)

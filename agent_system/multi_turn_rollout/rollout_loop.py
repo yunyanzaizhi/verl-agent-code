@@ -48,8 +48,11 @@ class TrajectoryCollector:
         "code_repair_tool_replace_solution_count",
         "code_repair_tool_run_tests_count",
         "code_repair_tool_finish_count",
-        "code_repair_invalid_action_count",
-        "code_repair_policy_violation_count",
+        "code_repair_invalid_action_step_count",
+        "code_repair_protocol_accept_count",
+        "code_repair_protocol_reject_count",
+        "code_repair_protocol_side_effect_applied_count",
+        "code_repair_step_policy_violation_count",
     )
     CODE_REPAIR_MAX_METRIC_KEYS = (
         "code_repair_visible_score",
@@ -120,6 +123,27 @@ class TrajectoryCollector:
             return ""
         return str(action.get("tool_name") or "")
 
+
+    @staticmethod
+    def _code_repair_protocol_payload(info: Dict):
+        if not isinstance(info, dict):
+            return None
+        protocol_keys = {
+            "state_before": info.get("code_repair_protocol_state_before"),
+            "allowed_actions": _json_safe(info.get("code_repair_protocol_allowed_actions")),
+            "expected_action": info.get("code_repair_protocol_expected_action"),
+            "actual_action": info.get("code_repair_protocol_actual_action"),
+            "accepted": info.get("code_repair_protocol_accepted"),
+            "violation_reason": info.get("code_repair_protocol_violation_reason"),
+            "side_effect_applied": info.get("code_repair_protocol_side_effect_applied"),
+            "state_after": info.get("code_repair_protocol_state_after"),
+            "current_code_hash_before": _json_safe(info.get("code_repair_current_code_hash_before")),
+            "current_code_hash_after": _json_safe(info.get("code_repair_current_code_hash_after")),
+        }
+        if all(value is None for value in protocol_keys.values()):
+            return None
+        return protocol_keys
+
     @classmethod
     def _r2e_step_metrics_from_infos(cls, infos: List[Dict], active_masks: np.ndarray, batch_size: int):
         metrics = {key: np.zeros(batch_size, dtype=np.float32) for key in cls.R2E_STEP_METRIC_KEYS}
@@ -165,14 +189,29 @@ class TrajectoryCollector:
             action = info.get("code_repair_action") if isinstance(info, dict) else None
             if not isinstance(action, dict):
                 continue
-            if action.get("valid") is False or info.get("is_action_valid") is False:
-                metrics["code_repair_invalid_action_count"][idx] = 1.0
+
+            is_schema_invalid = action.get("valid") is False
+            is_env_invalid = info.get("is_action_valid") is False
+            protocol_accepted = info.get("code_repair_protocol_accepted")
+            protocol_rejected = protocol_accepted is False
+            counts_as_protocol_reject = protocol_rejected and is_schema_invalid is False
+            counts_as_invalid_action = is_schema_invalid or (is_env_invalid and not counts_as_protocol_reject)
+
+            if counts_as_invalid_action:
+                metrics["code_repair_invalid_action_step_count"][idx] = 1.0
+            elif counts_as_protocol_reject:
+                metrics["code_repair_protocol_reject_count"][idx] = 1.0
             else:
                 action_name = cls._code_repair_action_name(info)
                 tool_key = f"code_repair_tool_{action_name}_count"
                 if tool_key in metrics:
                     metrics[tool_key][idx] = 1.0
-            metrics["code_repair_policy_violation_count"][idx] = cls._as_float(
+                if protocol_accepted is True:
+                    metrics["code_repair_protocol_accept_count"][idx] = 1.0
+                if info.get("code_repair_protocol_side_effect_applied") is True:
+                    metrics["code_repair_protocol_side_effect_applied_count"][idx] = 1.0
+
+            metrics["code_repair_step_policy_violation_count"][idx] = cls._as_float(
                 info.get("code_repair_step_policy_violation_count", 0.0)
             )
             metrics["code_repair_visible_score"][idx] = cls._as_float(info.get("code_repair_visible_score", 0.0))
@@ -235,11 +274,17 @@ class TrajectoryCollector:
                     "is_action_valid": info.get("is_action_valid"),
                 },
                 "env": {
+                    "name": str(
+                        getattr(getattr(getattr(self, "config", None), "env", None), "env_name", "")
+                        or info.get("environment_name")
+                        or ("code_repair" if info.get("code_repair_action") else "r2e_gym")
+                    ),
                     "raw_observation": raw_observation,
                     "observation": self._obs_item(next_obs, "text", episode_idx),
                     "anchor": self._obs_item(next_obs, "anchor", episode_idx),
                     "reward": rewards_list[episode_idx],
                     "done": dones_list[episode_idx],
+                    "protocol": self._code_repair_protocol_payload(info),
                     "info": info,
                 },
             }

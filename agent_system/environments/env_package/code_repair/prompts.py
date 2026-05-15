@@ -102,11 +102,14 @@ Follow exactly this workflow:
 2. After view_problem(section=all), call replace_solution with the complete class Solution implementation.
 3. After every replace_solution call, call run_tests with suite=visible.
 4. If visible tests fail, call view_problem(section=all) before editing again.
-5. After that refreshed view_problem(section=all), call replace_solution again, then run_tests(suite=visible) again.
-6. Repeat steps 4 and 5 until visible tests pass.
-7. If visible tests pass for the current code, call finish.
+5. Repeat replace_solution -> run_tests(suite=visible) after each refreshed view_problem(section=all).
+6. If visible tests pass for the current code, call finish.
 
-Wrong-order actions receive large reward penalties:
+Illegal-order actions are rejected by the environment.
+Rejected actions do not edit code, do not run tests, and do not finish the episode.
+After rejection, the same protocol state remains active until the required action is sent.
+
+Hard rejection examples:
 - Do not call replace_solution twice in a row.
 - Do not call replace_solution immediately after failed visible tests; refresh first with view_problem(section=all).
 - Do not call finish before visible tests pass for the current replacement.

@@ -175,6 +175,42 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics["episode/code_repair/full_score/max"], 1.0)
 
 
+    def test_compute_data_metrics_includes_new_code_repair_protocol_metrics(self):
+        """Test new CodeRepair protocol counters when present."""
+        self.batch.non_tensor_batch = {
+            "traj_uid": np.array(["traj-a", "traj-b"], dtype=object),
+            "episode_rewards": np.array([0.0, 1.0], dtype=np.float32),
+            "episode_lengths": np.array([4.0, 5.0], dtype=np.float32),
+            "tool_callings": np.array([4.0, 5.0], dtype=np.float32),
+            "code_repair_tool_view_problem_count": np.array([1.0, 1.0], dtype=np.float32),
+            "code_repair_tool_replace_solution_count": np.array([2.0, 1.0], dtype=np.float32),
+            "code_repair_tool_run_tests_count": np.array([1.0, 2.0], dtype=np.float32),
+            "code_repair_tool_finish_count": np.array([0.0, 1.0], dtype=np.float32),
+            "code_repair_invalid_action_step_count": np.array([1.0, 0.0], dtype=np.float32),
+            "code_repair_protocol_accept_count": np.array([3.0, 4.0], dtype=np.float32),
+            "code_repair_protocol_reject_count": np.array([1.0, 0.0], dtype=np.float32),
+            "code_repair_protocol_side_effect_applied_count": np.array([2.0, 4.0], dtype=np.float32),
+            "code_repair_step_policy_violation_count": np.array([1.0, 0.0], dtype=np.float32),
+            "code_repair_visible_score": np.array([0.5, 1.0], dtype=np.float32),
+            "code_repair_full_score": np.array([0.0, 1.0], dtype=np.float32),
+        }
+
+        metrics = compute_data_metrics(self.batch, use_critic=True)
+
+        self.assertAlmostEqual(metrics["episode/code_repair/replace_solution/mean"], 1.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/run_tests/mean"], 1.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/finish/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/invalid_action_step_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/invalid_action_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/protocol_accept_count/mean"], 3.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/protocol_reject_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/protocol_side_effect_applied_count/mean"], 3.0)
+        self.assertAlmostEqual(metrics["episode/code_repair/step_policy_violation_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/policy_violation_count/mean"], 0.5)
+        self.assertAlmostEqual(metrics["episode/code_repair/visible_score/mean"], 0.75)
+        self.assertAlmostEqual(metrics["episode/code_repair/full_score/max"], 1.0)
+
+
 class TestComputeTimingMetrics(unittest.TestCase):
     """Tests for the compute_timing_metrics function."""
     
